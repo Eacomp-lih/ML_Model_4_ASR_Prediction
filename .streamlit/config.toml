@@ -8,3 +8,7 @@ font = "sans serif"
 [server]
 headless = true
 maxUploadSize = 10
+
+[client]
+toolbarMode = "minimal"
+showErrorDetails = "none"
