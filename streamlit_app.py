@@ -42,7 +42,7 @@ st.markdown("""
 [data-testid="stSidebar"] [role="radiogroup"] label:hover{background:#f0f5fb;color:#1768e5}
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){background:#eaf2ff;color:#1768e5;font-weight:700;box-shadow:inset -4px 0 #237ef5}
 [data-testid="stSidebar"] [role="radiogroup"] input{display:none!important}
-[data-testid="stSidebar"] [role="radiogroup"] label>div:first-child{display:none!important}
+[data-testid="stSidebar"] [role="radiogroup"] label>div>div:first-child{display:none!important}
 </style>""", unsafe_allow_html=True)
 
 
