@@ -117,9 +117,7 @@ class ASRPredictor:
             return "ABO3"
         if np.isclose(oxygen_per_b, 2.5, atol=1e-6):
             return "A2B2O5"
-        raise ValueError(
-            f"仅支持 ABO3 或 A2B2O5；当前 {formula} 的 O/B={oxygen_per_b:.6g}"
-        )
+        return f"其他氧化物（O/B={oxygen_per_b:.5g}）"
 
     def build_features(self, formula: str, electrolyte: str) -> tuple[pd.DataFrame, dict[str, Any]]:
         formula = str(formula).strip()
