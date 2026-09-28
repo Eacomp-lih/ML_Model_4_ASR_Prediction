@@ -29,7 +29,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.7.1"
+APP_VERSION = "v0.7.2"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -227,7 +227,7 @@ def get_training_data():
 
 
 def t(chinese, english):
-    return english if st.session_state.get("ui_language", "中文") == "English" else chinese
+    return chinese
 
 
 def heading(title, subtitle):
@@ -719,7 +719,7 @@ def query_page():
 
 def reset_display_settings():
     defaults = {"ui_theme":"亮色", "ui_font_size":"标准", "ui_density":"舒适",
-                "default_prediction_model":"RF", "default_electrolyte":"GDC", "ui_language":"中文"}
+                "default_prediction_model":"RF", "default_electrolyte":"GDC"}
     st.session_state.update(defaults)
 
 
@@ -753,19 +753,37 @@ def settings_page():
                     st.error("暂时无法连接账号认证服务。")
             st.divider()
             st.markdown("#### 更改密码")
+            current_password = st.text_input("当前密码", type="password", key="settings_current_password")
             new_password = st.text_input("新密码（至少6位）", type="password", key="settings_new_password")
             confirm_password = st.text_input("确认新密码", type="password", key="settings_confirm_password")
             if st.button("更新密码"):
-                if len(new_password) < 6:
+                if not current_password:
+                    st.error("请输入当前密码。")
+                elif len(new_password) < 6:
                     st.error("新密码至少需要6位。")
                 elif new_password != confirm_password:
                     st.error("两次输入的新密码不一致。")
+                elif current_password == new_password:
+                    st.error("新密码不能与当前密码相同。")
                 else:
-                    headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                     try:
+                        verify_response = requests.post(
+                            f"{url}/auth/v1/token?grant_type=password",
+                            headers={"apikey": key, "Authorization": f"Bearer {key}",
+                                     "Content-Type": "application/json"},
+                            json={"email": st.session_state.get("auth_email", ""),
+                                  "password": current_password}, timeout=15)
+                        if not verify_response.ok:
+                            st.error("当前密码不正确，无法更新密码。")
+                            st.stop()
+                        verified_payload = verify_response.json()
+                        verified_token = verified_payload.get("access_token", "")
+                        headers = {"apikey": key, "Authorization": f"Bearer {verified_token}",
+                                   "Content-Type": "application/json"}
                         response = requests.put(f"{url}/auth/v1/user", headers=headers,
                                                 json={"password": new_password}, timeout=15)
                         if response.ok:
+                            remember_login(verified_payload)
                             st.success("密码已更新。下次登录请使用新密码。")
                         else:
                             st.error("密码更新失败，请重新登录后再试。")
@@ -802,7 +820,6 @@ def settings_page():
             st.session_state.ui_theme = "亮色"
         st.radio("显示模式", ["亮色", "暗色"], horizontal=True, key="ui_theme",
                  help="暗色模式会同时调整页面、输入框、卡片、表格和图表配色。")
-        st.radio("界面语言 / Language", ["中文", "English"], horizontal=True, key="ui_language")
         a, b = st.columns(2)
         a.radio("字体大小", ["标准", "大"], horizontal=True, key="ui_font_size")
         b.radio("内容密度", ["舒适", "紧凑"], horizontal=True, key="ui_density")
@@ -842,14 +859,6 @@ def settings_page():
             st.markdown("上传模块会检查缺失值、重复样本、非法电解质、ASR格式与异常值。查询模块支持筛选数据、自定义坐标轴和显示列。")
         st.markdown("#### 隐私政策")
         st.markdown("- 账号密码由 Supabase Auth 管理，本项目代码和 GitHub 仓库不保存用户密码。\n- 上传的数据默认仅在当前应用会话中处理，除非页面明确提示将数据写入云端。\n- 反馈内容会连同账号邮箱、用户名和应用版本写入受访问策略保护的反馈表。\n- 请勿上传含有个人敏感信息、商业机密或无权处理的数据。")
-        st.markdown("#### 版本更新记录")
-        changelog = pd.DataFrame([
-            ["v0.7.0", "设置入口重构、高对比暗色主题、语言选择、持久登录、账号注销和帮助中心"],
-            ["v0.6.1", "设置移至侧栏左下角，增加显示偏好与默认预测参数"],
-            ["v0.6.0", "新增账号、显示和问题反馈设置"],
-            ["v0.5.0", "新增预测解释、详细可靠性、训练历史、评估图和数据质量检查"],
-        ], columns=["版本", "主要更新"])
-        st.dataframe(changelog, use_container_width=True, hide_index=True)
 
 
 def set_active_page(page_name, module_name, keep_training_menu=False):
