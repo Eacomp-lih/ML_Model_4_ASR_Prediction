@@ -175,7 +175,8 @@ class ASRPredictor:
         return frame, audit
 
     def predict(
-        self, formula: str, electrolyte: str, model_name: str = "rf", *, verbose: bool = True
+        self, formula: str, electrolyte: str, model_name: str = "rf", *, verbose: bool = True,
+        include_details: bool = True,
     ) -> dict[str, Any]:
         model_name = str(model_name).lower().strip()
         if model_name not in MODEL_NAMES:
@@ -183,23 +184,24 @@ class ASRPredictor:
         frame, audit = self.build_features(formula, electrolyte)
         log_asr = float(np.asarray(self.models[model_name].predict(frame)).reshape(-1)[0])
         reliability, domain, pca_distance = self.pca_applicability.score(frame)
-        pca_details = self.pca_applicability.details(frame)
+        pca_details = self.pca_applicability.details(frame) if include_details else None
         impacts = []
-        baseline = log_asr
-        for feature in self.feature_columns:
-            median = self.feature_medians.get(feature, np.nan)
-            if pd.isna(median):
-                continue
-            changed = frame.copy()
-            changed.at[0, feature] = float(median)
-            changed_prediction = float(np.asarray(self.models[model_name].predict(changed)).reshape(-1)[0])
-            impacts.append({
-                "feature": feature,
-                "value": float(frame.at[0, feature]),
-                "reference_median": float(median),
-                "impact": float(baseline - changed_prediction),
-            })
-        impacts.sort(key=lambda item: abs(item["impact"]), reverse=True)
+        if include_details:
+            baseline = log_asr
+            for feature in self.feature_columns:
+                median = self.feature_medians.get(feature, np.nan)
+                if pd.isna(median):
+                    continue
+                changed = frame.copy()
+                changed.at[0, feature] = float(median)
+                changed_prediction = float(np.asarray(self.models[model_name].predict(changed)).reshape(-1)[0])
+                impacts.append({
+                    "feature": feature,
+                    "value": float(frame.at[0, feature]),
+                    "reference_median": float(median),
+                    "impact": float(baseline - changed_prediction),
+                })
+            impacts.sort(key=lambda item: abs(item["impact"]), reverse=True)
         result = {
             "model": model_name,
             "formula": str(formula).strip(),

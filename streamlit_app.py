@@ -33,10 +33,12 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.8.0"
+APP_VERSION = "v0.8.1"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
+if "ui_theme_saved" not in st.session_state:
+    st.session_state.ui_theme_saved = "亮色"
 st.markdown("""
 <style>
 [data-testid="stAppViewContainer"]{background:#f5f8fc}[data-testid="stSidebar"]{background:linear-gradient(180deg,#f7fbff,#eef5ff);border-right:1px solid #d9e6f5}
@@ -63,7 +65,7 @@ st.markdown("""
 [data-testid="stSidebar"] .stButton>button{justify-content:flex-start;text-align:left;padding:.55rem .7rem}
 </style>""", unsafe_allow_html=True)
 
-if st.session_state.get("ui_theme") == "暗色":
+if st.session_state.get("ui_theme_saved") == "暗色":
     st.markdown("""
     <style>
     [data-testid="stAppViewContainer"]{background:#070b14;color:#f1f5f9}
@@ -83,7 +85,7 @@ if st.session_state.get("ui_theme") == "暗色":
     </style>
     """, unsafe_allow_html=True)
 
-pio.templates.default = "plotly_dark" if st.session_state.get("ui_theme") == "暗色" else "plotly_white"
+pio.templates.default = "plotly_dark" if st.session_state.get("ui_theme_saved") == "暗色" else "plotly_white"
 
 if st.session_state.get("ui_font_size") == "大":
     st.markdown("<style>html,body,[class*=css]{font-size:17px}.page-title{font-size:2.15rem}</style>", unsafe_allow_html=True)
@@ -640,6 +642,89 @@ def prediction_page():
                 "确认所选电解质属于平台支持的五种类型。",
                 "若模型或特征加载失败，请刷新页面后重试，并在持续失败时提交问题反馈。",
             ])
+    batch_prediction_section()
+
+
+def batch_prediction_section():
+    st.divider()
+    st.markdown("### 批量预测")
+    st.caption("上传 CSV 或 XLSX 文件，必须包含 Composition 和 electrolyte 两列；单次最多预测100条材料。")
+    example = pd.DataFrame({
+        "Composition": ["Pr0.3Sr0.7CoO3", "La0.6Sr0.4CoO3"],
+        "electrolyte": ["GDC", "SDC"],
+    })
+    with st.expander("查看批量预测文件示例"):
+        st.dataframe(example, use_container_width=True, hide_index=True)
+        st.download_button("下载示例 CSV", example.to_csv(index=False).encode("utf-8-sig"),
+                           "batch_prediction_example.csv", "text/csv")
+    left, right = st.columns([1.5, 1])
+    upload = left.file_uploader("上传批量预测文件", type=["csv", "xlsx"], key="batch_prediction_file")
+    model_options = [name.upper() for name in MODEL_NAMES]
+    default_model = st.session_state.get("default_prediction_model", "RF")
+    model = right.selectbox("批量预测模型", model_options,
+                            index=model_options.index(default_model) if default_model in model_options else 1,
+                            key="batch_prediction_model")
+    if st.button("运行批量预测", type="primary", disabled=upload is None, use_container_width=True):
+        try:
+            rows = read_table(upload)
+            missing = {"Composition", "electrolyte"} - set(rows.columns)
+            if missing:
+                raise ValueError(f"缺少必要列：{sorted(missing)}")
+            if not 1 <= len(rows) <= 100:
+                raise ValueError("批量预测文件必须包含1至100条数据")
+            rows = rows[["Composition", "electrolyte"]].copy()
+            rows["Composition"] = rows["Composition"].astype(str).str.strip()
+            rows["electrolyte"] = rows["electrolyte"].astype(str).str.strip()
+            invalid = sorted(set(rows["electrolyte"]) - set(ELECTROLYTES))
+            if invalid:
+                raise ValueError(f"存在不支持的电解质：{invalid}")
+            output = []
+            progress = st.progress(0, text="正在进行批量预测…")
+            predictor = get_predictor()
+            for index, row in enumerate(rows.itertuples(index=False), start=1):
+                try:
+                    result = predictor.predict(row.Composition, row.electrolyte, model.lower(),
+                                               verbose=False, include_details=False)
+                    output.append({
+                        "Composition": row.Composition, "electrolyte": row.electrolyte, "模型": model,
+                        "Log_ASR": result["Log_ASR"], "ASR（Ω·cm²）": result["ASR"],
+                        "PCA可靠性得分（%）": result["reliability_score"],
+                        "可靠性等级": result["reliability_level"], "适用域": result["pca_domain"], "错误": "",
+                    })
+                except Exception as exc:
+                    output.append({"Composition": row.Composition, "electrolyte": row.electrolyte,
+                                   "模型": model, "错误": str(exc)})
+                progress.progress(index / len(rows), text=f"已完成 {index}/{len(rows)}")
+            progress.empty()
+            result_frame = pd.DataFrame(output)
+            success_count = int((result_frame["错误"] == "").sum())
+            failed_count = len(result_frame) - success_count
+            st.session_state.batch_prediction_result = result_frame
+            add_operation("ASR预测", f"批量预测 / {model} / 成功{success_count}条 / 失败{failed_count}条",
+                          "成功" if failed_count == 0 else "部分成功")
+            if failed_count:
+                st.warning(f"批量预测完成：成功 {success_count} 条，失败 {failed_count} 条。失败原因已写入结果表。")
+            else:
+                st.success(f"批量预测完成：共 {success_count} 条。")
+        except Exception as exc:
+            add_operation("ASR预测", f"批量预测 / {model}", "失败")
+            friendly_error("无法完成批量预测", exc, [
+                "确认文件包含 Composition 和 electrolyte 两列。",
+                "确认数据不超过100条，且电解质名称属于平台支持列表。",
+                "检查文件是否为有效的CSV或XLSX格式。",
+            ])
+    result_frame = st.session_state.get("batch_prediction_result")
+    if isinstance(result_frame, pd.DataFrame) and not result_frame.empty:
+        st.dataframe(result_frame.round(5), use_container_width=True, hide_index=True)
+        excel_buffer = io.BytesIO()
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            result_frame.to_excel(writer, index=False, sheet_name="批量预测结果")
+        c1, c2 = st.columns(2)
+        c1.download_button("下载批量结果 CSV", result_frame.to_csv(index=False).encode("utf-8-sig"),
+                           "batch_asr_predictions.csv", "text/csv", use_container_width=True)
+        c2.download_button("下载批量结果 Excel", excel_buffer.getvalue(), "batch_asr_predictions.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        st.caption("免责声明：批量预测结果仅供科研筛选参考，失败行不会生成预测值，所有结果均应结合实验验证。")
 
 
 MODEL_OPTIONS = {
@@ -836,9 +921,13 @@ def query_page():
 
 
 def reset_display_settings():
-    defaults = {"ui_theme":"亮色", "ui_font_size":"标准", "ui_density":"舒适",
+    defaults = {"ui_theme_saved":"亮色", "_ui_theme_control":"亮色", "ui_font_size":"标准", "ui_density":"舒适",
                 "default_prediction_model":"RF", "default_electrolyte":"GDC"}
     st.session_state.update(defaults)
+
+
+def save_theme_setting():
+    st.session_state.ui_theme_saved = st.session_state._ui_theme_control
 
 
 def settings_page():
@@ -945,9 +1034,11 @@ def settings_page():
                         st.error("暂时无法连接账号服务，请稍后重试。")
     with display_tab:
         st.markdown("#### 外观与使用偏好")
-        if "ui_theme" not in st.session_state:
-            st.session_state.ui_theme = "亮色"
-        st.radio("显示模式", ["亮色", "暗色"], horizontal=True, key="ui_theme",
+        theme_options = ["亮色", "暗色"]
+        if "_ui_theme_control" not in st.session_state:
+            st.session_state._ui_theme_control = st.session_state.get("ui_theme_saved", "亮色")
+        st.radio("显示模式", theme_options, horizontal=True, key="_ui_theme_control",
+                 on_change=save_theme_setting,
                  help="暗色模式会同时调整页面、输入框、卡片、表格和图表配色。")
         a, b = st.columns(2)
         a.radio("字体大小", ["标准", "大"], horizontal=True, key="ui_font_size")
@@ -980,7 +1071,6 @@ def settings_page():
         st.markdown("#### 服务状态")
         checks = [
             ("训练数据", TRAINING_FILE.exists(), "内置训练数据文件可用" if TRAINING_FILE.exists() else "训练数据文件缺失"),
-            ("品牌资源", LOGO_FILE.exists(), "Logo资源可用" if LOGO_FILE.exists() else "Logo资源缺失"),
             ("账号配置", bool(url and key), "Supabase配置已加载" if url and key else "Supabase配置不完整"),
         ]
         try:
