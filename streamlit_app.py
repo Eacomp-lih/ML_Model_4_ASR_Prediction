@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -12,6 +12,7 @@ import plotly.express as px
 import plotly.io as pio
 import requests
 import streamlit as st
+import extra_streamlit_components as stx
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.ensemble import RandomForestRegressor
@@ -28,7 +29,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.6.1"
+APP_VERSION = "v0.7.0"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -42,8 +43,8 @@ st.markdown("""
 .label{color:#6b7d90;font-size:.86rem;margin-bottom:.15rem}.value{color:#173c67;font-size:1.14rem;font-weight:680}.score{color:#117a68;font-size:1.28rem;font-weight:760}
 .note{background:#edf5ff;border-left:4px solid #237ef5;padding:.75rem 1rem;border-radius:7px;color:#36516d}div.stButton>button{border-radius:9px;font-weight:650}
 .version{position:fixed;bottom:18px;left:24px;color:#94a3b8;font-size:.78rem;z-index:999}
-.st-key-sidebar_utility{position:fixed;left:1rem;bottom:2.65rem;width:calc(21rem - 2rem);z-index:998}
-.st-key-sidebar_utility .stButton>button{min-height:2.15rem!important;padding:.32rem .65rem!important;font-size:.88rem!important}
+.st-key-sidebar_utility{position:fixed;left:1rem;right:1rem;bottom:2.65rem;width:auto!important;z-index:998}
+.st-key-sidebar_utility .stButton{width:auto!important}.st-key-sidebar_utility .stButton>button{width:auto!important;min-height:2.05rem!important;padding:.28rem .58rem!important;font-size:.84rem!important}
 .st-key-sidebar_utility [data-testid="stBaseButton-secondary"]{background:transparent!important;border-color:transparent!important}
 .st-key-sidebar_utility [data-testid="stBaseButton-secondary"]:hover{background:#e8f1ff!important;border-color:#c9dcf7!important}
 .model-banner{background:linear-gradient(90deg,#173c67,#237ef5);color:#fff;border-radius:11px;padding:.78rem 1rem;margin:.25rem 0 1rem;font-weight:750;font-size:1.04rem}
@@ -61,18 +62,20 @@ st.markdown("""
 if st.session_state.get("ui_theme") == "暗色":
     st.markdown("""
     <style>
-    [data-testid="stAppViewContainer"]{background:#0f172a;color:#e2e8f0}
-    [data-testid="stHeader"]{background:rgba(15,23,42,.94)}
-    [data-testid="stSidebar"]{background:linear-gradient(180deg,#111827,#172033);border-right:1px solid #334155}
-    .page-title,.value,.auth-title{color:#dbeafe}.page-subtitle,.label,.auth-subtitle{color:#94a3b8}
-    .result-card,[data-testid="stForm"],[data-testid="stExpander"]{background:#172033;border-color:#334155}
-    .note{background:#172554;color:#dbeafe}
-    [data-testid="stWidgetLabel"],p,li,h1,h2,h3,h4,h5,h6{color:#e2e8f0}
-    input,textarea,[data-baseweb="select"]>div,[data-baseweb="input"]>div{background:#111827!important;color:#e2e8f0!important;border-color:#475569!important}
-    [data-baseweb="tab-list"]{background:#111827;border-radius:9px}[data-baseweb="tab"]{color:#cbd5e1}
-    [data-testid="stDataFrame"],iframe{background:#172033!important}
-    [data-testid="stMetric"]{background:#172033;border:1px solid #334155;border-radius:10px;padding:.55rem}
-    .st-key-sidebar_utility [data-testid="stBaseButton-secondary"]:hover{background:#263449!important;border-color:#475569!important}
+    [data-testid="stAppViewContainer"]{background:#070b14;color:#f1f5f9}
+    [data-testid="stHeader"]{background:rgba(7,11,20,.97)}
+    [data-testid="stSidebar"]{background:#0b1220;border-right:1px solid #334155}
+    .page-title,.value,.auth-title{color:#f8fafc}.page-subtitle,.label,.auth-subtitle{color:#b6c2d2}
+    .result-card,[data-testid="stForm"],[data-testid="stExpander"]{background:#111c2e;border:1px solid #3b4c65;box-shadow:0 6px 20px rgba(0,0,0,.28)}
+    .note{background:#172554;color:#eff6ff;border-left-color:#60a5fa}
+    [data-testid="stWidgetLabel"],p,li,h1,h2,h3,h4,h5,h6,label{color:#f1f5f9!important}
+    input,textarea,[data-baseweb="select"]>div,[data-baseweb="input"]>div{background:#18243a!important;color:#fff!important;border-color:#64748b!important}
+    [data-baseweb="tab-list"]{background:#111c2e;border:1px solid #334155;border-radius:9px}[data-baseweb="tab"]{color:#dbeafe}
+    [data-baseweb="popover"],[role="listbox"]{background:#18243a!important;color:#fff!important}
+    [data-testid="stDataFrame"],iframe{background:#111c2e!important;border:1px solid #3b4c65}
+    [data-testid="stMetric"]{background:#111c2e;border:1px solid #3b4c65;border-radius:10px;padding:.55rem}
+    [data-testid="stBaseButton-secondary"]{background:#18243a;color:#f8fafc;border-color:#64748b}
+    .st-key-sidebar_utility [data-testid="stBaseButton-secondary"]:hover{background:#243552!important;border-color:#7c93b3!important}
     </style>
     """, unsafe_allow_html=True)
 
@@ -94,6 +97,30 @@ def get_auth_config():
     return auth, url, key
 
 
+@st.cache_resource
+def get_cookie_manager():
+    return stx.CookieManager(key="asr_auth_cookies")
+
+
+def remember_login(payload):
+    st.session_state.auth_access_token = payload.get("access_token")
+    st.session_state.auth_email = payload.get("user", {}).get("email", "")
+    st.session_state.auth_username = payload.get("user", {}).get("user_metadata", {}).get("username", "")
+    refresh_token = payload.get("refresh_token")
+    if refresh_token:
+        get_cookie_manager().set("asr_refresh_token", refresh_token,
+                                 expires_at=datetime.now() + timedelta(days=30), key="save_refresh_token")
+
+
+def clear_login():
+    for item in ["auth_access_token", "auth_email", "auth_username"]:
+        st.session_state.pop(item, None)
+    try:
+        get_cookie_manager().delete("asr_refresh_token", key="delete_refresh_token")
+    except Exception:
+        pass
+
+
 def authentication_gate():
     auth, url, key = get_auth_config()
     if not auth.get("required", False):
@@ -105,12 +132,26 @@ def authentication_gate():
     if parsed_url.scheme != "https" or not parsed_url.netloc or not parsed_url.netloc.endswith(".supabase.co"):
         st.error("账号系统配置错误：supabase_url 必须是 https://<项目ID>.supabase.co 格式的 Project URL，不能使用 Supabase 控制台页面地址。")
         st.stop()
+    if not st.session_state.get("auth_access_token"):
+        refresh_token = get_cookie_manager().get("asr_refresh_token")
+        if refresh_token:
+            try:
+                refresh_response = requests.post(
+                    f"{url}/auth/v1/token?grant_type=refresh_token",
+                    headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                    json={"refresh_token": refresh_token}, timeout=15)
+                if refresh_response.ok:
+                    remember_login(refresh_response.json())
+                    st.rerun()
+                else:
+                    clear_login()
+            except requests.RequestException:
+                pass
     if st.session_state.get("auth_access_token"):
         with st.sidebar:
             st.caption(f'当前账号：{st.session_state.get("auth_email", "已登录用户")}')
             if st.button("退出登录", use_container_width=True):
-                st.session_state.pop("auth_access_token", None)
-                st.session_state.pop("auth_email", None)
+                clear_login()
                 st.rerun()
         return
     _, auth_col, _ = st.columns([1, 1.15, 1])
@@ -119,6 +160,8 @@ def authentication_gate():
         with logo_col:
             st.image(str(LOGO_FILE), use_container_width=True)
         st.markdown('<div class="auth-title">用户登录</div><div class="auth-subtitle">注册账号并登录后方可使用材料预测平台</div>', unsafe_allow_html=True)
+        if st.session_state.pop("account_deleted", False):
+            st.success("账号已永久注销。")
         login_tab, register_tab = st.tabs(["登录", "注册"])
         headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
         with login_tab:
@@ -130,9 +173,7 @@ def authentication_gate():
                                              json={"email": email.strip(), "password": password}, timeout=15)
                     if response.ok:
                         payload = response.json()
-                        st.session_state.auth_access_token = payload.get("access_token")
-                        st.session_state.auth_email = payload.get("user", {}).get("email", email.strip())
-                        st.session_state.auth_username = payload.get("user", {}).get("user_metadata", {}).get("username", "")
+                        remember_login(payload)
                         st.rerun()
                     else:
                         st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
@@ -152,6 +193,10 @@ def authentication_gate():
                         response = requests.post(f"{url}/auth/v1/signup", headers=headers,
                                                  json={"email": new_email.strip(), "password": new_password}, timeout=15)
                         if response.ok:
+                            payload = response.json()
+                            if payload.get("access_token"):
+                                remember_login(payload)
+                                st.rerun()
                             st.success("注册成功。若已开启邮箱验证，请先查收验证邮件，然后返回登录。")
                         else:
                             content_type = response.headers.get("content-type", "")
@@ -177,6 +222,10 @@ def get_training_data():
     df["电解质"] = df[one_hot].idxmax(axis=1).str.replace("electrolyte_", "", regex=False)
     df["ASR（Ω·cm²）"] = np.power(10.0, pd.to_numeric(df["Log_ASR"], errors="coerce"))
     return df
+
+
+def t(chinese, english):
+    return english if st.session_state.get("ui_language", "中文") == "English" else chinese
 
 
 def heading(title, subtitle):
@@ -418,7 +467,8 @@ def fit_and_report(X, y, model, filename, split_config, *, model_name, parameter
 
 
 def prediction_page():
-    heading("ASR预测", "输入材料与电解质，输出650℃下预测结果和PCA适用域可靠性。")
+    heading(t("ASR预测", "ASR Prediction"), t("输入材料与电解质，输出650℃下预测结果和PCA适用域可靠性。",
+                                               "Enter a material and electrolyte to predict ASR at 650°C with PCA reliability."))
     with st.container(border=True):
         c1, c2, c3 = st.columns([1.45, .8, .9])
         formula = c1.text_input("化学式", "Pr0.3Sr0.7CoO3", help="输入可由当前描述符库解析的氧化物化学式")
@@ -494,7 +544,8 @@ MODEL_OPTIONS = {
 
 
 def training_page(mode="overview"):
-    heading("模型训练", "配置数据划分、评估策略和模型专属超参数。")
+    heading(t("模型训练", "Model Training"), t("配置数据划分、评估策略和模型专属超参数。",
+                                                 "Configure data splits, evaluation and model-specific hyperparameters."))
     if mode == "overview":
         st.markdown('<div class="note">请从左侧缩进的子菜单选择“内置数据集训练”或“自定义数据集训练”。</div>', unsafe_allow_html=True)
         st.markdown("- **内置数据集训练**：使用网站既定特征，通过调整参数重新训练。\n- **自定义数据集训练**：上传自己的特征表，系统自动识别数值与分类特征。")
@@ -596,7 +647,7 @@ def inspect_uploaded_data(raw):
 
 
 def upload_page():
-    heading("数据上传", "校验并整理材料实验数据。")
+    heading(t("数据上传", "Data Upload"), t("校验并整理材料实验数据。", "Validate and organize experimental material data."))
     st.markdown(f'<div class="note">必需列：Composition、electrolyte、ASR（Ω·cm²）。电解质仅支持 {", ".join(ELECTROLYTES)}。数据只保存在当前会话，请及时下载备份。</div>', unsafe_allow_html=True)
     upload = st.file_uploader("上传数据（CSV/XLSX）", type=["csv", "xlsx"], key="data")
     if upload:
@@ -616,7 +667,8 @@ def upload_page():
 
 
 def query_page():
-    heading("数据查询", "浏览内置训练数据，并按化学式、电解质和650℃下ASR范围筛选。")
+    heading(t("数据查询", "Data Query"), t("浏览内置训练数据，并按化学式、电解质和650℃下ASR范围筛选。",
+                                             "Browse and filter the built-in training data."))
     data = get_training_data(); a, b = st.columns([1.5, 1])
     keyword = a.text_input("搜索化学式", placeholder="输入全部或部分化学式")
     electrolyte = b.multiselect("电解质类型", list(ELECTROLYTES), default=list(ELECTROLYTES))
@@ -665,13 +717,16 @@ def query_page():
 
 def reset_display_settings():
     defaults = {"ui_theme":"亮色", "ui_font_size":"标准", "ui_density":"舒适",
-                "default_prediction_model":"RF", "default_electrolyte":"GDC"}
+                "default_prediction_model":"RF", "default_electrolyte":"GDC", "ui_language":"中文"}
     st.session_state.update(defaults)
 
 
 def settings_page():
-    heading("设置", "管理账号资料、登录安全、界面显示和问题反馈。")
-    account_tab, display_tab, feedback_tab = st.tabs(["账号管理", "显示设置", "问题反馈"])
+    heading(t("设置", "Settings"), t("管理账号资料、登录安全、界面显示和问题反馈。",
+                                      "Manage your account, security, appearance and feedback."))
+    account_tab, display_tab, feedback_tab, help_tab = st.tabs([
+        t("账号管理", "Account"), t("显示设置", "Appearance"),
+        t("问题反馈", "Feedback"), t("帮助与关于", "Help & About")])
     auth, url, key = get_auth_config()
     token = st.session_state.get("auth_access_token", "")
     with account_tab:
@@ -721,15 +776,31 @@ def settings_page():
                     requests.post(f"{url}/auth/v1/logout", headers=headers, timeout=10)
                 except requests.RequestException:
                     pass
-                for item in ["auth_access_token", "auth_email", "auth_username"]:
-                    st.session_state.pop(item, None)
+                clear_login()
                 st.rerun()
+            with st.expander("危险操作：注销账号"):
+                st.warning("注销后账号将被永久删除，且无法恢复。与该账号关联的云端记录也可能被删除。")
+                delete_confirmation = st.text_input("输入“永久注销”以确认", key="delete_account_confirmation")
+                if st.button("永久注销账号", disabled=delete_confirmation != "永久注销", use_container_width=True):
+                    headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                    try:
+                        response = requests.post(f"{url}/rest/v1/rpc/delete_own_account", headers=headers,
+                                                 json={}, timeout=15)
+                        if response.ok:
+                            clear_login()
+                            st.session_state.account_deleted = True
+                            st.rerun()
+                        else:
+                            st.error("账号注销接口尚未配置，请联系管理员创建 delete_own_account 数据库函数。")
+                    except requests.RequestException:
+                        st.error("暂时无法连接账号服务，请稍后重试。")
     with display_tab:
         st.markdown("#### 外观与使用偏好")
         if "ui_theme" not in st.session_state:
             st.session_state.ui_theme = "亮色"
         st.radio("显示模式", ["亮色", "暗色"], horizontal=True, key="ui_theme",
                  help="暗色模式会同时调整页面、输入框、卡片、表格和图表配色。")
+        st.radio("界面语言 / Language", ["中文", "English"], horizontal=True, key="ui_language")
         a, b = st.columns(2)
         a.radio("字体大小", ["标准", "大"], horizontal=True, key="ui_font_size")
         b.radio("内容密度", ["舒适", "紧凑"], horizontal=True, key="ui_density")
@@ -759,6 +830,24 @@ def settings_page():
                         st.error("反馈入口尚未完成数据库配置，请联系管理员创建 feedback 表及对应访问策略。")
                 except requests.RequestException:
                     st.error("暂时无法连接反馈服务，请稍后重试。")
+    with help_tab:
+        st.markdown("#### 使用说明")
+        with st.expander("ASR预测与可靠性", expanded=True):
+            st.markdown("输入材料化学式、模型和电解质后运行预测。Log_ASR 与 ASR 为650℃下的模型输出；PCA可靠性衡量输入特征与训练数据分布的相似程度，并不是预测准确率。")
+        with st.expander("模型训练与训练记录"):
+            st.markdown("内置数据训练使用平台特征；自定义训练默认将 Composition、ASR 之外的列作为特征。系统保留当前会话最近5次训练，并支持下载表现最佳的模型。")
+        with st.expander("数据上传与查询"):
+            st.markdown("上传模块会检查缺失值、重复样本、非法电解质、ASR格式与异常值。查询模块支持筛选数据、自定义坐标轴和显示列。")
+        st.markdown("#### 隐私政策")
+        st.markdown("- 账号密码由 Supabase Auth 管理，本项目代码和 GitHub 仓库不保存用户密码。\n- 上传的数据默认仅在当前应用会话中处理，除非页面明确提示将数据写入云端。\n- 反馈内容会连同账号邮箱、用户名和应用版本写入受访问策略保护的反馈表。\n- 请勿上传含有个人敏感信息、商业机密或无权处理的数据。")
+        st.markdown("#### 版本更新记录")
+        changelog = pd.DataFrame([
+            ["v0.7.0", "设置入口重构、高对比暗色主题、语言选择、持久登录、账号注销和帮助中心"],
+            ["v0.6.1", "设置移至侧栏左下角，增加显示偏好与默认预测参数"],
+            ["v0.6.0", "新增账号、显示和问题反馈设置"],
+            ["v0.5.0", "新增预测解释、详细可靠性、训练历史、评估图和数据质量检查"],
+        ], columns=["版本", "主要更新"])
+        st.dataframe(changelog, use_container_width=True, hide_index=True)
 
 
 def set_active_page(page_name, module_name, keep_training_menu=False):
@@ -787,25 +876,25 @@ with st.sidebar:
     if "training_menu_open" not in st.session_state:
         st.session_state.training_menu_open = False
 
-    st.button("◇  ASR预测", type="primary" if st.session_state.active_module == "ASR预测" else "secondary",
+    st.button(t("◇  ASR预测", "◇  ASR Prediction"), type="primary" if st.session_state.active_module == "ASR预测" else "secondary",
               on_click=set_active_page, args=("ASR预测", "ASR预测"), use_container_width=True)
-    st.button("▦  模型训练", type="primary" if st.session_state.active_module == "模型训练" else "secondary",
+    st.button(t("▦  模型训练", "▦  Model Training"), type="primary" if st.session_state.active_module == "模型训练" else "secondary",
               on_click=toggle_training_menu, use_container_width=True)
     if st.session_state.training_menu_open:
         _, child_area = st.columns([.11, .89])
         with child_area:
-            st.button("01  内置数据集训练",
+            st.button(t("01  内置数据集训练", "01  Built-in Dataset"),
                       type="primary" if st.session_state.active_page == "内置数据集训练" else "secondary",
                       on_click=set_active_page, args=("内置数据集训练", "模型训练", True))
-            st.button("02  自定义数据集训练",
+            st.button(t("02  自定义数据集训练", "02  Custom Dataset"),
                       type="primary" if st.session_state.active_page == "自定义数据集训练" else "secondary",
                       on_click=set_active_page, args=("自定义数据集训练", "模型训练", True))
-    st.button("⇧  数据上传", type="primary" if st.session_state.active_module == "数据上传" else "secondary",
+    st.button(t("⇧  数据上传", "⇧  Data Upload"), type="primary" if st.session_state.active_module == "数据上传" else "secondary",
               on_click=set_active_page, args=("数据上传", "数据上传"), use_container_width=True)
-    st.button("⌕  数据查询", type="primary" if st.session_state.active_module == "数据查询" else "secondary",
+    st.button(t("⌕  数据查询", "⌕  Data Query"), type="primary" if st.session_state.active_module == "数据查询" else "secondary",
               on_click=set_active_page, args=("数据查询", "数据查询"), use_container_width=True)
     with st.container(key="sidebar_utility"):
-        st.button("⚙  设置", type="primary" if st.session_state.active_module == "设置" else "secondary",
+        st.button(t("⚙  设置", "⚙  Settings"), type="secondary",
                   on_click=set_active_page, args=("设置", "设置"), use_container_width=True)
     page = st.session_state.active_page
     st.markdown(f'<div class="version">当前版本：{APP_VERSION}</div>', unsafe_allow_html=True)
