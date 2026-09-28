@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from urllib.parse import urlparse
@@ -33,7 +34,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.8.2"
+APP_VERSION = "v0.8.3"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -143,6 +144,39 @@ def password_issues(password):
     return issues
 
 
+def save_browser_ui_state():
+    manager = get_cookie_manager()
+    expires_at = datetime.now() + timedelta(days=30)
+    manager.set("asr_active_page", st.session_state.get("active_page", "ASR预测"),
+                expires_at=expires_at, key="save_active_page")
+    manager.set("asr_active_module", st.session_state.get("active_module", "ASR预测"),
+                expires_at=expires_at, key="save_active_module")
+    manager.set("asr_training_menu", "1" if st.session_state.get("training_menu_open", False) else "0",
+                expires_at=expires_at, key="save_training_menu")
+
+
+def restore_browser_ui_state():
+    if st.session_state.get("browser_ui_restored"):
+        return
+    manager = get_cookie_manager()
+    valid_pages = {"ASR预测", "内置数据集训练", "自定义数据集训练", "数据上传", "数据查询", "设置"}
+    valid_modules = {"ASR预测", "模型训练", "数据上传", "数据查询", "设置"}
+    saved_page = manager.get("asr_active_page")
+    saved_module = manager.get("asr_active_module")
+    saved_theme = manager.get("asr_ui_theme")
+    if saved_page in valid_pages:
+        st.session_state.active_page = saved_page
+    if saved_module in valid_modules:
+        st.session_state.active_module = saved_module
+    st.session_state.training_menu_open = manager.get("asr_training_menu") == "1"
+    theme_changed = saved_theme in {"亮色", "暗色"} and saved_theme != st.session_state.get("ui_theme_saved")
+    if saved_theme in {"亮色", "暗色"}:
+        st.session_state.ui_theme_saved = saved_theme
+    st.session_state.browser_ui_restored = True
+    if theme_changed:
+        st.rerun()
+
+
 def authentication_gate():
     auth, url, key = get_auth_config()
     if not auth.get("required", False):
@@ -169,6 +203,10 @@ def authentication_gate():
                     clear_login()
             except requests.RequestException:
                 pass
+        elif st.session_state.get("cookie_load_attempts", 0) < 3:
+            st.session_state.cookie_load_attempts = st.session_state.get("cookie_load_attempts", 0) + 1
+            time.sleep(.35)
+            st.rerun()
     if st.session_state.get("auth_access_token"):
         return
     _, auth_col, _ = st.columns([1, 1.15, 1])
@@ -252,6 +290,7 @@ def authentication_gate():
 
 
 authentication_gate()
+restore_browser_ui_state()
 
 
 @st.cache_resource(show_spinner="正在加载模型与适用域分析器…")
@@ -920,10 +959,14 @@ def reset_display_settings():
     defaults = {"ui_theme_saved":"亮色", "_ui_theme_control":"亮色", "ui_font_size":"标准", "ui_density":"舒适",
                 "default_prediction_model":"RF", "default_electrolyte":"GDC"}
     st.session_state.update(defaults)
+    get_cookie_manager().set("asr_ui_theme", "亮色", expires_at=datetime.now() + timedelta(days=30),
+                             key="reset_ui_theme")
 
 
 def save_theme_setting():
     st.session_state.ui_theme_saved = st.session_state._ui_theme_control
+    get_cookie_manager().set("asr_ui_theme", st.session_state.ui_theme_saved,
+                             expires_at=datetime.now() + timedelta(days=30), key="save_ui_theme")
 
 
 def settings_page():
@@ -1128,11 +1171,13 @@ def set_active_page(page_name, module_name, keep_training_menu=False):
     st.session_state.active_module = module_name
     if not keep_training_menu:
         st.session_state.training_menu_open = False
+    save_browser_ui_state()
 
 
 def toggle_training_menu():
     st.session_state.active_module = "模型训练"
     st.session_state.training_menu_open = not st.session_state.training_menu_open
+    save_browser_ui_state()
 
 
 with st.sidebar:
