@@ -24,7 +24,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.4.0"
+APP_VERSION = "v0.4.1"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -351,6 +351,7 @@ def query_page():
     axis_labels = {
         "tolerance_factor": "Goldschmidt 容忍因子",
         "B_site_oxidation": "B位平均氧化态",
+        "B_site_Lewis_acid_strength": "B位路易斯酸强度",
         "oxygen_per_B": "O/B 化学计量比",
         "composition_entropy": "组成熵",
         "ASR（Ω·cm²）": "ASR（Ω·cm²）",
@@ -358,8 +359,8 @@ def query_page():
     }
     label_to_column = {axis_labels.get(col, col): col for col in numeric_columns}
     axis_names = list(label_to_column)
-    default_x = axis_names.index("Goldschmidt 容忍因子") if "Goldschmidt 容忍因子" in axis_names else 0
-    default_y = axis_names.index("ASR（Ω·cm²）") if "ASR（Ω·cm²）" in axis_names else min(1, len(axis_names) - 1)
+    default_x = axis_names.index("B位路易斯酸强度") if "B位路易斯酸强度" in axis_names else 0
+    default_y = axis_names.index("Log_ASR") if "Log_ASR" in axis_names else min(1, len(axis_names) - 1)
     x_box, y_box = st.columns(2)
     x_label = x_box.selectbox("交互图横轴", axis_names, index=default_x)
     y_label = y_box.selectbox("交互图纵轴", axis_names, index=default_y)
@@ -394,21 +395,21 @@ with st.sidebar:
     if "training_menu_open" not in st.session_state:
         st.session_state.training_menu_open = False
 
-    if st.button("⚡  ASR预测", type="primary" if st.session_state.active_page == "ASR预测" else "secondary"):
+    if st.button("◇  ASR预测", type="primary" if st.session_state.active_page == "ASR预测" else "secondary"):
         st.session_state.active_page = "ASR预测"
     training_active = st.session_state.active_page in {"内置数据集训练", "自定义数据集训练"}
-    if st.button("🧠  模型训练", type="primary" if training_active else "secondary"):
+    if st.button("▦  模型训练", type="primary" if training_active else "secondary"):
         st.session_state.training_menu_open = not st.session_state.training_menu_open
     if st.session_state.training_menu_open:
         _, child_area = st.columns([.11, .89])
         with child_area:
-            if st.button("↳  内置数据集训练", type="primary" if st.session_state.active_page == "内置数据集训练" else "secondary"):
+            if st.button("01  内置数据集训练", type="primary" if st.session_state.active_page == "内置数据集训练" else "secondary"):
                 st.session_state.active_page = "内置数据集训练"
-            if st.button("↳  自定义数据集训练", type="primary" if st.session_state.active_page == "自定义数据集训练" else "secondary"):
+            if st.button("02  自定义数据集训练", type="primary" if st.session_state.active_page == "自定义数据集训练" else "secondary"):
                 st.session_state.active_page = "自定义数据集训练"
-    if st.button("☁  数据上传", type="primary" if st.session_state.active_page == "数据上传" else "secondary"):
+    if st.button("⇧  数据上传", type="primary" if st.session_state.active_page == "数据上传" else "secondary"):
         st.session_state.active_page = "数据上传"
-    if st.button("🔍  数据查询", type="primary" if st.session_state.active_page == "数据查询" else "secondary"):
+    if st.button("⌕  数据查询", type="primary" if st.session_state.active_page == "数据查询" else "secondary"):
         st.session_state.active_page = "数据查询"
     page = st.session_state.active_page
     st.markdown(f'<div class="version">当前版本：{APP_VERSION}</div>', unsafe_allow_html=True)
