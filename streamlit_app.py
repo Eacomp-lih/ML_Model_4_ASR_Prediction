@@ -13,6 +13,10 @@ import plotly.io as pio
 import requests
 import streamlit as st
 import extra_streamlit_components as stx
+from reportlab.lib.pagesizes import A4
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+from reportlab.pdfgen import canvas
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
 from sklearn.ensemble import RandomForestRegressor
@@ -29,7 +33,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.7.2"
+APP_VERSION = "v0.8.0"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -123,6 +127,19 @@ def clear_login():
         pass
 
 
+def password_issues(password):
+    issues = []
+    if len(password) < 8:
+        issues.append("至少8位")
+    if not any(char.isupper() for char in password):
+        issues.append("至少1个大写字母")
+    if not any(char.islower() for char in password):
+        issues.append("至少1个小写字母")
+    if not any(char.isdigit() for char in password):
+        issues.append("至少1个数字")
+    return issues
+
+
 def authentication_gate():
     auth, url, key = get_auth_config()
     if not auth.get("required", False):
@@ -169,25 +186,52 @@ def authentication_gate():
         with login_tab:
             email = st.text_input("邮箱", key="login_email")
             password = st.text_input("密码", type="password", key="login_password")
-            if st.button("登录", type="primary", use_container_width=True):
+            locked_until = st.session_state.get("login_locked_until")
+            locked = bool(locked_until and datetime.now() < locked_until)
+            if locked:
+                remaining = max(1, int((locked_until - datetime.now()).total_seconds() // 60) + 1)
+                st.error(f"登录失败次数过多，请在约 {remaining} 分钟后重试。")
+            if st.button("登录", type="primary", use_container_width=True, disabled=locked):
                 try:
                     response = requests.post(f"{url}/auth/v1/token?grant_type=password", headers=headers,
                                              json={"email": email.strip(), "password": password}, timeout=15)
                     if response.ok:
+                        st.session_state.login_failed_attempts = 0
+                        st.session_state.pop("login_locked_until", None)
                         payload = response.json()
                         remember_login(payload)
                         st.rerun()
                     else:
-                        st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
+                        attempts = st.session_state.get("login_failed_attempts", 0) + 1
+                        st.session_state.login_failed_attempts = attempts
+                        if attempts >= 5:
+                            st.session_state.login_locked_until = datetime.now() + timedelta(minutes=15)
+                            st.error("连续登录失败5次，当前会话已锁定15分钟。你也可以使用“忘记密码”。")
+                        else:
+                            st.error(f"登录失败，请检查邮箱、密码或邮箱验证状态。还可尝试 {5 - attempts} 次。")
                 except requests.RequestException:
-                    st.error("暂时无法连接账号认证服务，请检查 Supabase Project URL 和网络状态。")
+                    st.error("暂时无法连接账号服务。请检查网络连接，稍后重试；若持续失败，请通过问题反馈联系管理员。")
+            with st.expander("忘记密码"):
+                reset_email = st.text_input("注册邮箱", key="reset_email")
+                if st.button("发送密码重置邮件", disabled=not reset_email.strip(), use_container_width=True):
+                    try:
+                        response = requests.post(f"{url}/auth/v1/recover", headers=headers,
+                                                 json={"email": reset_email.strip()}, timeout=15)
+                        if response.ok:
+                            st.success("若该邮箱已注册，密码重置邮件将很快发出。请检查收件箱和垃圾邮件。")
+                        else:
+                            st.error("暂时无法发送重置邮件。请确认邮箱格式，稍后重试。")
+                    except requests.RequestException:
+                        st.error("账号服务暂时不可用。请检查网络后重试。")
         with register_tab:
             new_email = st.text_input("注册邮箱", key="register_email")
-            new_password = st.text_input("设置密码（至少6位）", type="password", key="register_password")
+            new_password = st.text_input("设置密码", type="password", key="register_password",
+                                         help="至少8位，并包含大写字母、小写字母和数字。")
             confirm_password = st.text_input("确认密码", type="password", key="register_password_confirm")
             if st.button("创建账号", use_container_width=True):
-                if len(new_password) < 6:
-                    st.error("密码至少需要6位。")
+                issues = password_issues(new_password)
+                if issues:
+                    st.error("密码强度不足：" + "、".join(issues) + "。")
                 elif new_password != confirm_password:
                     st.error("两次输入的密码不一致。")
                 else:
@@ -232,6 +276,55 @@ def t(chinese, english):
 
 def heading(title, subtitle):
     st.markdown(f'<div class="page-title">{title}</div><div class="page-subtitle">{subtitle}</div>', unsafe_allow_html=True)
+
+
+def add_operation(category, summary, status="成功"):
+    history = st.session_state.setdefault("operation_history", [])
+    history.insert(0, {"时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                       "类型": category, "内容": summary, "状态": status})
+    del history[100:]
+
+
+def friendly_error(title, exc, suggestions):
+    st.error(f"{title}：{exc}")
+    with st.expander("查看可能的解决方法"):
+        for suggestion in suggestions:
+            st.markdown(f"- {suggestion}")
+
+
+def prediction_exports(result):
+    export_fields = {
+        "模型": result["model"].upper(), "材料": result["formula"], "电解质": result["electrolyte"],
+        "结构类型": result["structure_type"], "Log_ASR": result["Log_ASR"],
+        "ASR_Ohm_cm2": result["ASR"], "PCA可靠性得分_pct": result["reliability_score"],
+        "可靠性等级": result["reliability_level"], "适用域": result["pca_domain"],
+        "PCA_kNN距离": result["pca_distance"],
+    }
+    frame = pd.DataFrame([export_fields])
+    csv_data = frame.to_csv(index=False).encode("utf-8-sig")
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+        frame.to_excel(writer, index=False, sheet_name="预测结果")
+    pdf_buffer = io.BytesIO()
+    pdfmetrics.registerFont(UnicodeCIDFont("STSong-Light"))
+    pdf = canvas.Canvas(pdf_buffer, pagesize=A4)
+    pdf.setTitle("ASR Prediction Report")
+    pdf.setFont("STSong-Light", 16)
+    pdf.drawString(55, 800, "钙钛矿型SOFC阴极材料650℃下ASR预测报告")
+    pdf.setFont("STSong-Light", 10)
+    y = 765
+    for label, value in export_fields.items():
+        display = f"{value:.5f}" if isinstance(value, float) else str(value)
+        pdf.drawString(60, y, f"{label}：{display}")
+        y -= 24
+    pdf.drawString(60, y - 8, "免责声明：本结果由机器学习模型生成，仅供科研参考，不替代实验验证。")
+    pdf.save()
+    name = f'{result["formula"]}_{result["model"].lower()}_asr_prediction'
+    c1, c2, c3 = st.columns(3)
+    c1.download_button("下载 CSV", csv_data, f"{name}.csv", "text/csv", use_container_width=True)
+    c2.download_button("下载 Excel", excel_buffer.getvalue(), f"{name}.xlsx",
+                       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+    c3.download_button("下载 PDF 报告", pdf_buffer.getvalue(), f"{name}.pdf", "application/pdf", use_container_width=True)
 
 
 def read_table(upload):
@@ -465,6 +558,7 @@ def fit_and_report(X, y, model, filename, split_config, *, model_name, parameter
         "测试MAE": test_metrics["MAE"], "测试RMSE": test_metrics["RMSE"],
         "参数": str(parameters), "parameters": parameters, "model_bytes": model_bytes, "文件名": filename,
     })
+    add_operation("模型训练", f"{source} / {model_name} / {len(X)}条 / 测试R²={test_metrics['R²']:.5f}")
     st.download_button("下载训练后的模型", model_bytes, filename, "application/octet-stream")
 
 
@@ -485,6 +579,8 @@ def prediction_page():
         try:
             with st.spinner("正在生成特征并计算预测…"):
                 r = get_predictor().predict(formula, electrolyte, model.lower(), verbose=False)
+            st.session_state.last_prediction = r
+            add_operation("ASR预测", f'{formula} / {electrolyte} / {model} / ASR={r["ASR"]:.5f}')
             st.success("预测完成")
             fields = [("使用模型", r["model"].upper()), ("材料化学式", r["formula"]), ("电解质类型", r["electrolyte"]),
                       ("结构类型", r["structure_type"]), ("Log_ASR", f'{r["Log_ASR"]:.5f}'),
@@ -534,8 +630,16 @@ def prediction_page():
                          use_container_width=True, hide_index=True)
             if r["audit"].get("warning"):
                 st.info(f'化学计量/价态提示：{r["audit"]["warning"]}')
+            st.markdown("### 导出预测结果")
+            prediction_exports(r)
+            st.caption("免责声明：预测结果由机器学习模型生成，仅供科研筛选与分析参考，不能替代实验测试或工程验证。")
         except Exception as exc:
-            st.error(f"无法完成预测：{exc}")
+            add_operation("ASR预测", f"{formula} / {electrolyte} / {model}", "失败")
+            friendly_error("无法完成预测", exc, [
+                "检查化学式是否书写完整，并使用标准元素符号和数字。",
+                "确认所选电解质属于平台支持的五种类型。",
+                "若模型或特征加载失败，请刷新页面后重试，并在持续失败时提交问题反馈。",
+            ])
 
 
 MODEL_OPTIONS = {
@@ -567,7 +671,9 @@ def training_page(mode="overview"):
                 fit_and_report(data[features], data["Log_ASR"].to_numpy(), model,
                                f"builtin_{name.lower()}.joblib", split_config,
                                model_name=name, parameters=params, source="内置数据集")
-            except Exception as exc: st.error(f"训练失败：{exc}")
+            except Exception as exc:
+                add_operation("模型训练", f"内置数据集 / {name}", "失败")
+                friendly_error("训练失败", exc, ["检查数据划分比例之和是否为100%。", "减少模型复杂度或关闭5-fold后重试。", "刷新页面仍失败时，请提交问题反馈。"])
     else:
         st.markdown('<div class="note">默认将 Composition 和 ASR 之外的全部列作为训练特征。字符列会自动独热编码，数值列会自动补全并标准化。数据量过少时，结果可能不准确。</div>', unsafe_allow_html=True)
         example = pd.DataFrame({"Composition":["La0.6Sr0.4CoO3","Pr0.5Ba0.5CoO3","La0.8Sr0.2FeO3"],
@@ -597,7 +703,9 @@ def training_page(mode="overview"):
                 fit_and_report(X, np.log10(rows["ASR"].to_numpy()), model,
                                f"custom_{name.lower()}.joblib", split_config,
                                model_name=name, parameters=params, source="用户数据集")
-            except Exception as exc: st.error(f"训练失败：{exc}")
+            except Exception as exc:
+                add_operation("模型训练", f"用户数据集 / {name}", "失败")
+                friendly_error("训练失败", exc, ["确认文件包含 Composition、ASR 以及至少一列特征。", "确认ASR均为正数，且数据量满足划分要求。", "检查文本与数值特征列的数据格式是否一致。"])
     render_training_history()
 
 
@@ -659,13 +767,23 @@ def upload_page():
             st.markdown("### 数据质量校验报告")
             st.dataframe(report, use_container_width=True, hide_index=True)
             if rows is None:
+                signature = (upload.name, getattr(upload, "size", None), "failed")
+                if st.session_state.get("last_upload_signature") != signature:
+                    add_operation("数据上传", f"{upload.name} / 数据校验未通过", "失败")
+                    st.session_state.last_upload_signature = signature
                 st.error("数据存在必须修正的错误，暂不生成整理结果。")
                 return
             view = rows[["Composition", "electrolyte", "Log_ASR"]].copy()
             view["ASR"] = np.power(10., view["Log_ASR"]); st.session_state["uploaded_data"] = view
+            signature = (upload.name, getattr(upload, "size", None))
+            if st.session_state.get("last_upload_signature") != signature:
+                add_operation("数据上传", f"{upload.name} / 校验通过{len(view)}条")
+                st.session_state.last_upload_signature = signature
             st.success(f"通过校验：{len(view)} 条数据"); st.dataframe(view, use_container_width=True, hide_index=True)
             st.download_button("下载校验后的CSV", view.to_csv(index=False).encode("utf-8-sig"), "validated_asr_data.csv", "text/csv")
-        except Exception as exc: st.error(f"数据校验失败：{exc}")
+        except Exception as exc:
+            add_operation("数据上传", getattr(upload, "name", "未知文件"), "失败")
+            friendly_error("数据校验失败", exc, ["确认文件是有效的CSV或XLSX格式。", "检查必要列名是否为 Composition、electrolyte、ASR。", "确认ASR为正数，电解质名称属于支持列表。"])
 
 
 def query_page():
@@ -726,9 +844,9 @@ def reset_display_settings():
 def settings_page():
     heading(t("设置", "Settings"), t("管理账号资料、登录安全、界面显示和问题反馈。",
                                       "Manage your account, security, appearance and feedback."))
-    account_tab, display_tab, feedback_tab, help_tab = st.tabs([
+    account_tab, display_tab, history_tab, service_tab, feedback_tab, help_tab = st.tabs([
         t("账号管理", "Account"), t("显示设置", "Appearance"),
-        t("问题反馈", "Feedback"), t("帮助与关于", "Help & About")])
+        "操作记录", "服务状态", t("问题反馈", "Feedback"), t("帮助与关于", "Help & About")])
     auth, url, key = get_auth_config()
     token = st.session_state.get("auth_access_token", "")
     with account_tab:
@@ -754,13 +872,14 @@ def settings_page():
             st.divider()
             st.markdown("#### 更改密码")
             current_password = st.text_input("当前密码", type="password", key="settings_current_password")
-            new_password = st.text_input("新密码（至少6位）", type="password", key="settings_new_password")
+            new_password = st.text_input("新密码", type="password", key="settings_new_password",
+                                         help="至少8位，并包含大写字母、小写字母和数字。")
             confirm_password = st.text_input("确认新密码", type="password", key="settings_confirm_password")
             if st.button("更新密码"):
                 if not current_password:
                     st.error("请输入当前密码。")
-                elif len(new_password) < 6:
-                    st.error("新密码至少需要6位。")
+                elif password_issues(new_password):
+                    st.error("密码强度不足：" + "、".join(password_issues(new_password)) + "。")
                 elif new_password != confirm_password:
                     st.error("两次输入的新密码不一致。")
                 elif current_password == new_password:
@@ -800,10 +919,20 @@ def settings_page():
                 st.rerun()
             with st.expander("危险操作：注销账号"):
                 st.warning("注销后账号将被永久删除，且无法恢复。与该账号关联的云端记录也可能被删除。")
+                delete_password = st.text_input("输入当前密码", type="password", key="delete_account_password")
                 delete_confirmation = st.text_input("输入“永久注销”以确认", key="delete_account_confirmation")
-                if st.button("永久注销账号", disabled=delete_confirmation != "永久注销", use_container_width=True):
-                    headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                if st.button("永久注销账号", disabled=delete_confirmation != "永久注销" or not delete_password,
+                             use_container_width=True):
                     try:
+                        verify_response = requests.post(
+                            f"{url}/auth/v1/token?grant_type=password",
+                            headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
+                            json={"email": st.session_state.get("auth_email", ""), "password": delete_password}, timeout=15)
+                        if not verify_response.ok:
+                            st.error("当前密码不正确，账号未注销。")
+                            st.stop()
+                        headers = {"apikey": key, "Authorization": f'Bearer {verify_response.json().get("access_token", token)}',
+                                   "Content-Type": "application/json"}
                         response = requests.post(f"{url}/rest/v1/rpc/delete_own_account", headers=headers,
                                                  json={}, timeout=15)
                         if response.ok:
@@ -829,6 +958,50 @@ def settings_page():
         d.selectbox("默认电解质", list(ELECTROLYTES), index=1, key="default_electrolyte")
         st.caption("显示与默认值保存在当前浏览器会话中，不会影响其他用户。")
         st.button("恢复默认显示设置", on_click=reset_display_settings)
+    with history_tab:
+        st.markdown("#### 最近操作记录")
+        st.caption("记录当前会话中的预测、训练和数据上传操作，最多保留100条；退出或服务重启后不会保留。")
+        history = st.session_state.get("operation_history", [])
+        if history:
+            history_frame = pd.DataFrame(history)
+            categories = st.multiselect("筛选类型", ["ASR预测", "模型训练", "数据上传"],
+                                        default=["ASR预测", "模型训练", "数据上传"])
+            shown_history = history_frame[history_frame["类型"].isin(categories)]
+            st.dataframe(shown_history, use_container_width=True, hide_index=True)
+            st.download_button("下载操作记录 CSV", shown_history.to_csv(index=False).encode("utf-8-sig"),
+                               "asr_operation_history.csv", "text/csv")
+            confirm_clear = st.checkbox("我确认清空当前会话的操作记录", key="confirm_clear_history")
+            if st.button("清空操作记录", disabled=not confirm_clear):
+                st.session_state.operation_history = []
+                st.rerun()
+        else:
+            st.info("当前会话尚无预测、训练或数据上传记录。")
+    with service_tab:
+        st.markdown("#### 服务状态")
+        checks = [
+            ("训练数据", TRAINING_FILE.exists(), "内置训练数据文件可用" if TRAINING_FILE.exists() else "训练数据文件缺失"),
+            ("品牌资源", LOGO_FILE.exists(), "Logo资源可用" if LOGO_FILE.exists() else "Logo资源缺失"),
+            ("账号配置", bool(url and key), "Supabase配置已加载" if url and key else "Supabase配置不完整"),
+        ]
+        try:
+            predictor_ready = bool(get_predictor().models)
+            predictor_message = "预测模型已加载" if predictor_ready else "未找到预测模型"
+        except Exception as exc:
+            predictor_ready = False
+            predictor_message = f"模型加载失败：{exc}"
+        checks.insert(0, ("预测服务", predictor_ready, predictor_message))
+        status_frame = pd.DataFrame([{"服务": name, "状态": "正常" if ok else "异常", "说明": message}
+                                     for name, ok, message in checks])
+        st.dataframe(status_frame, use_container_width=True, hide_index=True)
+        if st.button("检查云端账号服务", use_container_width=True):
+            try:
+                response = requests.get(f"{url}/auth/v1/health", headers={"apikey": key}, timeout=10)
+                if response.ok:
+                    st.success("云端账号服务连接正常。")
+                else:
+                    st.error(f"云端账号服务返回异常状态（HTTP {response.status_code}）。请稍后重试或联系管理员。")
+            except requests.RequestException:
+                st.error("无法连接云端账号服务。请检查网络后重试；预测模型本身可能仍可正常使用。")
     with feedback_tab:
         st.markdown("#### 提交问题或建议")
         category = st.selectbox("反馈类型", ["功能建议", "预测问题", "数据问题", "账号问题", "界面问题", "其他"])
@@ -859,6 +1032,8 @@ def settings_page():
             st.markdown("上传模块会检查缺失值、重复样本、非法电解质、ASR格式与异常值。查询模块支持筛选数据、自定义坐标轴和显示列。")
         st.markdown("#### 隐私政策")
         st.markdown("- 账号密码由 Supabase Auth 管理，本项目代码和 GitHub 仓库不保存用户密码。\n- 上传的数据默认仅在当前应用会话中处理，除非页面明确提示将数据写入云端。\n- 反馈内容会连同账号邮箱、用户名和应用版本写入受访问策略保护的反馈表。\n- 请勿上传含有个人敏感信息、商业机密或无权处理的数据。")
+        st.markdown("#### 服务条款与免责声明")
+        st.markdown("- 本平台用于科研辅助、材料筛选和方法探索，不构成产品性能承诺、工程设计依据或商业决策建议。\n- 预测值、可靠性得分和解释结果均来源于有限训练数据与统计模型，可能存在偏差、外推误差或数据质量影响。\n- 任何关键结论均应通过独立实验和专业判断验证；因直接使用平台输出造成的损失，平台不承担相应责任。\n- 用户应确保上传数据来源合法，并拥有必要的使用和处理权限。\n- 禁止利用平台实施违法活动、攻击服务或绕过访问控制。")
 
 
 def set_active_page(page_name, module_name, keep_training_menu=False):
