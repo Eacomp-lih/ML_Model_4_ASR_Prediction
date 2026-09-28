@@ -27,7 +27,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.5.2"
+APP_VERSION = "v0.6.0"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -53,16 +53,32 @@ st.markdown("""
 [data-testid="stSidebar"] .stButton>button{justify-content:flex-start;text-align:left;padding:.55rem .7rem}
 </style>""", unsafe_allow_html=True)
 
+if st.session_state.get("ui_theme") == "暗色":
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"]{background:#0f172a;color:#e2e8f0}
+    [data-testid="stHeader"]{background:rgba(15,23,42,.94)}
+    [data-testid="stSidebar"]{background:linear-gradient(180deg,#111827,#172033);border-right:1px solid #334155}
+    .page-title,.value{color:#dbeafe}.page-subtitle,.label{color:#94a3b8}
+    .result-card{background:#172033;border-color:#334155}.note{background:#172554;color:#dbeafe}
+    </style>
+    """, unsafe_allow_html=True)
 
-def authentication_gate():
+
+def get_auth_config():
     try:
         auth = dict(st.secrets.get("auth", {}))
     except Exception:
         auth = {}
-    if not auth.get("required", False):
-        return
     url = str(auth.get("supabase_url", "")).strip().strip('"\'').rstrip("/")
     key = str(auth.get("supabase_anon_key", "")).strip().strip('"\'')
+    return auth, url, key
+
+
+def authentication_gate():
+    auth, url, key = get_auth_config()
+    if not auth.get("required", False):
+        return
     if not url or not key:
         st.error("账号系统已启用，但尚未配置 Supabase URL 或匿名公钥。请联系管理员。")
         st.stop()
@@ -97,6 +113,7 @@ def authentication_gate():
                         payload = response.json()
                         st.session_state.auth_access_token = payload.get("access_token")
                         st.session_state.auth_email = payload.get("user", {}).get("email", email.strip())
+                        st.session_state.auth_username = payload.get("user", {}).get("user_metadata", {}).get("username", "")
                         st.rerun()
                     else:
                         st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
@@ -623,6 +640,90 @@ def query_page():
         st.info("请至少选择一个表格显示列。")
 
 
+def settings_page():
+    heading("设置", "管理账号资料、登录安全、界面显示和问题反馈。")
+    account_tab, display_tab, feedback_tab = st.tabs(["账号管理", "显示设置", "问题反馈"])
+    auth, url, key = get_auth_config()
+    token = st.session_state.get("auth_access_token", "")
+    with account_tab:
+        if not auth.get("required", False) or not token:
+            st.info("当前未启用账号认证，账号资料与密码管理暂不可用。")
+        else:
+            st.markdown("#### 账号信息")
+            st.text_input("登录邮箱", value=st.session_state.get("auth_email", ""), disabled=True)
+            username = st.text_input("用户名", value=st.session_state.get("auth_username", ""),
+                                     placeholder="设置用于平台内显示的用户名")
+            if st.button("保存用户名", type="primary"):
+                headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                try:
+                    response = requests.put(f"{url}/auth/v1/user", headers=headers,
+                                            json={"data": {"username": username.strip()}}, timeout=15)
+                    if response.ok:
+                        st.session_state.auth_username = username.strip()
+                        st.success("用户名已更新。")
+                    else:
+                        st.error("用户名更新失败，请重新登录后再试。")
+                except requests.RequestException:
+                    st.error("暂时无法连接账号认证服务。")
+            st.divider()
+            st.markdown("#### 更改密码")
+            new_password = st.text_input("新密码（至少6位）", type="password", key="settings_new_password")
+            confirm_password = st.text_input("确认新密码", type="password", key="settings_confirm_password")
+            if st.button("更新密码"):
+                if len(new_password) < 6:
+                    st.error("新密码至少需要6位。")
+                elif new_password != confirm_password:
+                    st.error("两次输入的新密码不一致。")
+                else:
+                    headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+                    try:
+                        response = requests.put(f"{url}/auth/v1/user", headers=headers,
+                                                json={"password": new_password}, timeout=15)
+                        if response.ok:
+                            st.success("密码已更新。下次登录请使用新密码。")
+                        else:
+                            st.error("密码更新失败，请重新登录后再试。")
+                    except requests.RequestException:
+                        st.error("暂时无法连接账号认证服务。")
+            st.divider()
+            if st.button("退出当前账号", use_container_width=True):
+                headers = {"apikey": key, "Authorization": f"Bearer {token}"}
+                try:
+                    requests.post(f"{url}/auth/v1/logout", headers=headers, timeout=10)
+                except requests.RequestException:
+                    pass
+                for item in ["auth_access_token", "auth_email", "auth_username"]:
+                    st.session_state.pop(item, None)
+                st.rerun()
+    with display_tab:
+        st.markdown("#### 界面主题")
+        if "ui_theme" not in st.session_state:
+            st.session_state.ui_theme = "亮色"
+        st.radio("显示模式", ["亮色", "暗色"], horizontal=True, key="ui_theme",
+                 help="主题选择仅保存在当前浏览器会话中。")
+        st.caption("切换后页面会自动重新绘制；部分浏览器原生控件可能继续跟随系统主题。")
+    with feedback_tab:
+        st.markdown("#### 提交问题或建议")
+        category = st.selectbox("反馈类型", ["功能建议", "预测问题", "数据问题", "账号问题", "界面问题", "其他"])
+        message = st.text_area("反馈内容", height=160, placeholder="请描述遇到的问题、复现步骤或希望增加的功能。")
+        if st.button("提交反馈", type="primary", disabled=not message.strip(), use_container_width=True):
+            if not token:
+                st.error("请登录后再提交反馈。")
+            else:
+                headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json", "Prefer": "return=minimal"}
+                payload = {"email": st.session_state.get("auth_email", ""),
+                           "username": st.session_state.get("auth_username", ""),
+                           "category": category, "message": message.strip(), "app_version": APP_VERSION}
+                try:
+                    response = requests.post(f"{url}/rest/v1/feedback", headers=headers, json=payload, timeout=15)
+                    if response.ok:
+                        st.success("反馈已提交，感谢你的建议。")
+                    else:
+                        st.error("反馈入口尚未完成数据库配置，请联系管理员创建 feedback 表及对应访问策略。")
+                except requests.RequestException:
+                    st.error("暂时无法连接反馈服务，请稍后重试。")
+
+
 def set_active_page(page_name, module_name, keep_training_menu=False):
     """Update both navigation levels before Streamlit redraws the sidebar."""
     st.session_state.active_page = page_name
@@ -666,6 +767,8 @@ with st.sidebar:
               on_click=set_active_page, args=("数据上传", "数据上传"), use_container_width=True)
     st.button("⌕  数据查询", type="primary" if st.session_state.active_module == "数据查询" else "secondary",
               on_click=set_active_page, args=("数据查询", "数据查询"), use_container_width=True)
+    st.button("⚙  设置", type="primary" if st.session_state.active_module == "设置" else "secondary",
+              on_click=set_active_page, args=("设置", "设置"), use_container_width=True)
     page = st.session_state.active_page
     st.markdown(f'<div class="version">当前版本：{APP_VERSION}</div>', unsafe_allow_html=True)
 
@@ -674,4 +777,4 @@ if page == "内置数据集训练":
 elif page == "自定义数据集训练":
     training_page("custom")
 else:
-    {"ASR预测": prediction_page, "数据上传": upload_page, "数据查询": query_page}[page]()
+    {"ASR预测": prediction_page, "数据上传": upload_page, "数据查询": query_page, "设置": settings_page}[page]()
