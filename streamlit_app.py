@@ -33,7 +33,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.8.1"
+APP_VERSION = "v0.8.2"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -51,6 +51,7 @@ st.markdown("""
 .version{position:fixed;bottom:18px;left:24px;color:#94a3b8;font-size:.78rem;z-index:999}
 .st-key-sidebar_utility{position:fixed;left:1rem;right:1rem;bottom:2.65rem;width:auto!important;z-index:998}
 .st-key-sidebar_utility .stButton{width:auto!important}.st-key-sidebar_utility .stButton>button{width:auto!important;min-height:2.05rem!important;padding:.28rem .58rem!important;font-size:.84rem!important}
+.st-key-sidebar_utility [data-testid="stCaptionContainer"]{padding:0 .58rem;color:#64748b;overflow-wrap:anywhere}
 .st-key-sidebar_utility [data-testid="stBaseButton-secondary"]{background:transparent!important;border-color:transparent!important}
 .st-key-sidebar_utility [data-testid="stBaseButton-secondary"]:hover{background:#e8f1ff!important;border-color:#c9dcf7!important}
 .model-banner{background:linear-gradient(90deg,#173c67,#237ef5);color:#fff;border-radius:11px;padding:.78rem 1rem;margin:.25rem 0 1rem;font-weight:750;font-size:1.04rem}
@@ -169,11 +170,6 @@ def authentication_gate():
             except requests.RequestException:
                 pass
     if st.session_state.get("auth_access_token"):
-        with st.sidebar:
-            st.caption(f'当前账号：{st.session_state.get("auth_email", "已登录用户")}')
-            if st.button("退出登录", use_container_width=True):
-                clear_login()
-                st.rerun()
         return
     _, auth_col, _ = st.columns([1, 1.15, 1])
     with auth_col:
@@ -1170,6 +1166,8 @@ with st.sidebar:
     st.button(t("⌕  数据查询", "⌕  Data Query"), type="primary" if st.session_state.active_module == "数据查询" else "secondary",
               on_click=set_active_page, args=("数据查询", "数据查询"), use_container_width=True)
     with st.container(key="sidebar_utility"):
+        if st.session_state.get("auth_access_token"):
+            st.caption(f'当前账号：{st.session_state.get("auth_email", "已登录用户")}')
         st.button(t("⚙  设置", "⚙  Settings"), type="secondary",
                   on_click=set_active_page, args=("设置", "设置"), use_container_width=True)
     page = st.session_state.active_page
