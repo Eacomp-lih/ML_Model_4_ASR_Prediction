@@ -9,6 +9,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio
 import requests
 import streamlit as st
 from sklearn.base import clone
@@ -27,7 +28,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.6.0"
+APP_VERSION = "v0.6.1"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -41,6 +42,10 @@ st.markdown("""
 .label{color:#6b7d90;font-size:.86rem;margin-bottom:.15rem}.value{color:#173c67;font-size:1.14rem;font-weight:680}.score{color:#117a68;font-size:1.28rem;font-weight:760}
 .note{background:#edf5ff;border-left:4px solid #237ef5;padding:.75rem 1rem;border-radius:7px;color:#36516d}div.stButton>button{border-radius:9px;font-weight:650}
 .version{position:fixed;bottom:18px;left:24px;color:#94a3b8;font-size:.78rem;z-index:999}
+.st-key-sidebar_utility{position:fixed;left:1rem;bottom:2.65rem;width:calc(21rem - 2rem);z-index:998}
+.st-key-sidebar_utility .stButton>button{min-height:2.15rem!important;padding:.32rem .65rem!important;font-size:.88rem!important}
+.st-key-sidebar_utility [data-testid="stBaseButton-secondary"]{background:transparent!important;border-color:transparent!important}
+.st-key-sidebar_utility [data-testid="stBaseButton-secondary"]:hover{background:#e8f1ff!important;border-color:#c9dcf7!important}
 .model-banner{background:linear-gradient(90deg,#173c67,#237ef5);color:#fff;border-radius:11px;padding:.78rem 1rem;margin:.25rem 0 1rem;font-weight:750;font-size:1.04rem}
 .auth-title{text-align:center;color:#173c67;font-size:2rem;font-weight:760;margin:.35rem 0 .3rem}.auth-subtitle{text-align:center;color:#63778f;margin-bottom:1.5rem}
 [data-testid="stSidebar"] [role="radiogroup"]{gap:.3rem}
@@ -59,10 +64,24 @@ if st.session_state.get("ui_theme") == "暗色":
     [data-testid="stAppViewContainer"]{background:#0f172a;color:#e2e8f0}
     [data-testid="stHeader"]{background:rgba(15,23,42,.94)}
     [data-testid="stSidebar"]{background:linear-gradient(180deg,#111827,#172033);border-right:1px solid #334155}
-    .page-title,.value{color:#dbeafe}.page-subtitle,.label{color:#94a3b8}
-    .result-card{background:#172033;border-color:#334155}.note{background:#172554;color:#dbeafe}
+    .page-title,.value,.auth-title{color:#dbeafe}.page-subtitle,.label,.auth-subtitle{color:#94a3b8}
+    .result-card,[data-testid="stForm"],[data-testid="stExpander"]{background:#172033;border-color:#334155}
+    .note{background:#172554;color:#dbeafe}
+    [data-testid="stWidgetLabel"],p,li,h1,h2,h3,h4,h5,h6{color:#e2e8f0}
+    input,textarea,[data-baseweb="select"]>div,[data-baseweb="input"]>div{background:#111827!important;color:#e2e8f0!important;border-color:#475569!important}
+    [data-baseweb="tab-list"]{background:#111827;border-radius:9px}[data-baseweb="tab"]{color:#cbd5e1}
+    [data-testid="stDataFrame"],iframe{background:#172033!important}
+    [data-testid="stMetric"]{background:#172033;border:1px solid #334155;border-radius:10px;padding:.55rem}
+    .st-key-sidebar_utility [data-testid="stBaseButton-secondary"]:hover{background:#263449!important;border-color:#475569!important}
     </style>
     """, unsafe_allow_html=True)
+
+pio.templates.default = "plotly_dark" if st.session_state.get("ui_theme") == "暗色" else "plotly_white"
+
+if st.session_state.get("ui_font_size") == "大":
+    st.markdown("<style>html,body,[class*=css]{font-size:17px}.page-title{font-size:2.15rem}</style>", unsafe_allow_html=True)
+if st.session_state.get("ui_density") == "紧凑":
+    st.markdown("<style>.block-container{padding-top:4.3rem!important}.result-card{padding:.72rem .9rem;margin-top:.55rem}[data-testid=stVerticalBlock]{gap:.65rem}</style>", unsafe_allow_html=True)
 
 
 def get_auth_config():
@@ -403,8 +422,12 @@ def prediction_page():
     with st.container(border=True):
         c1, c2, c3 = st.columns([1.45, .8, .9])
         formula = c1.text_input("化学式", "Pr0.3Sr0.7CoO3", help="输入可由当前描述符库解析的氧化物化学式")
-        model = c2.selectbox("模型", [n.upper() for n in MODEL_NAMES], index=1)
-        electrolyte = c3.selectbox("电解质类型", list(ELECTROLYTES), index=1)
+        model_options = [n.upper() for n in MODEL_NAMES]
+        default_model = st.session_state.get("default_prediction_model", "RF")
+        default_electrolyte = st.session_state.get("default_electrolyte", "GDC")
+        model = c2.selectbox("模型", model_options, index=model_options.index(default_model) if default_model in model_options else 1)
+        electrolyte = c3.selectbox("电解质类型", list(ELECTROLYTES),
+                                   index=list(ELECTROLYTES).index(default_electrolyte) if default_electrolyte in ELECTROLYTES else 1)
         run = st.button("运行预测", type="primary", use_container_width=True)
     if run:
         try:
@@ -640,6 +663,12 @@ def query_page():
         st.info("请至少选择一个表格显示列。")
 
 
+def reset_display_settings():
+    defaults = {"ui_theme":"亮色", "ui_font_size":"标准", "ui_density":"舒适",
+                "default_prediction_model":"RF", "default_electrolyte":"GDC"}
+    st.session_state.update(defaults)
+
+
 def settings_page():
     heading("设置", "管理账号资料、登录安全、界面显示和问题反馈。")
     account_tab, display_tab, feedback_tab = st.tabs(["账号管理", "显示设置", "问题反馈"])
@@ -696,12 +725,20 @@ def settings_page():
                     st.session_state.pop(item, None)
                 st.rerun()
     with display_tab:
-        st.markdown("#### 界面主题")
+        st.markdown("#### 外观与使用偏好")
         if "ui_theme" not in st.session_state:
             st.session_state.ui_theme = "亮色"
         st.radio("显示模式", ["亮色", "暗色"], horizontal=True, key="ui_theme",
-                 help="主题选择仅保存在当前浏览器会话中。")
-        st.caption("切换后页面会自动重新绘制；部分浏览器原生控件可能继续跟随系统主题。")
+                 help="暗色模式会同时调整页面、输入框、卡片、表格和图表配色。")
+        a, b = st.columns(2)
+        a.radio("字体大小", ["标准", "大"], horizontal=True, key="ui_font_size")
+        b.radio("内容密度", ["舒适", "紧凑"], horizontal=True, key="ui_density")
+        st.markdown("#### 预测默认值")
+        c, d = st.columns(2)
+        c.selectbox("默认模型", [name.upper() for name in MODEL_NAMES], index=1, key="default_prediction_model")
+        d.selectbox("默认电解质", list(ELECTROLYTES), index=1, key="default_electrolyte")
+        st.caption("显示与默认值保存在当前浏览器会话中，不会影响其他用户。")
+        st.button("恢复默认显示设置", on_click=reset_display_settings)
     with feedback_tab:
         st.markdown("#### 提交问题或建议")
         category = st.selectbox("反馈类型", ["功能建议", "预测问题", "数据问题", "账号问题", "界面问题", "其他"])
@@ -767,8 +804,9 @@ with st.sidebar:
               on_click=set_active_page, args=("数据上传", "数据上传"), use_container_width=True)
     st.button("⌕  数据查询", type="primary" if st.session_state.active_module == "数据查询" else "secondary",
               on_click=set_active_page, args=("数据查询", "数据查询"), use_container_width=True)
-    st.button("⚙  设置", type="primary" if st.session_state.active_module == "设置" else "secondary",
-              on_click=set_active_page, args=("设置", "设置"), use_container_width=True)
+    with st.container(key="sidebar_utility"):
+        st.button("⚙  设置", type="primary" if st.session_state.active_module == "设置" else "secondary",
+                  on_click=set_active_page, args=("设置", "设置"), use_container_width=True)
     page = st.session_state.active_page
     st.markdown(f'<div class="version">当前版本：{APP_VERSION}</div>', unsafe_allow_html=True)
 
