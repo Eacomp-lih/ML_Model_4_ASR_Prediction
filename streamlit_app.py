@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 
 import joblib
 import numpy as np
@@ -26,7 +27,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.5.1"
+APP_VERSION = "v0.5.2"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -60,10 +61,14 @@ def authentication_gate():
         auth = {}
     if not auth.get("required", False):
         return
-    url = str(auth.get("supabase_url", "")).rstrip("/")
-    key = str(auth.get("supabase_anon_key", ""))
+    url = str(auth.get("supabase_url", "")).strip().strip('"\'').rstrip("/")
+    key = str(auth.get("supabase_anon_key", "")).strip().strip('"\'')
     if not url or not key:
         st.error("账号系统已启用，但尚未配置 Supabase URL 或匿名公钥。请联系管理员。")
+        st.stop()
+    parsed_url = urlparse(url)
+    if parsed_url.scheme != "https" or not parsed_url.netloc or not parsed_url.netloc.endswith(".supabase.co"):
+        st.error("账号系统配置错误：supabase_url 必须是 https://<项目ID>.supabase.co 格式的 Project URL，不能使用 Supabase 控制台页面地址。")
         st.stop()
     if st.session_state.get("auth_access_token"):
         with st.sidebar:
@@ -85,15 +90,18 @@ def authentication_gate():
             email = st.text_input("邮箱", key="login_email")
             password = st.text_input("密码", type="password", key="login_password")
             if st.button("登录", type="primary", use_container_width=True):
-                response = requests.post(f"{url}/auth/v1/token?grant_type=password", headers=headers,
-                                         json={"email": email.strip(), "password": password}, timeout=15)
-                if response.ok:
-                    payload = response.json()
-                    st.session_state.auth_access_token = payload.get("access_token")
-                    st.session_state.auth_email = payload.get("user", {}).get("email", email.strip())
-                    st.rerun()
-                else:
-                    st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
+                try:
+                    response = requests.post(f"{url}/auth/v1/token?grant_type=password", headers=headers,
+                                             json={"email": email.strip(), "password": password}, timeout=15)
+                    if response.ok:
+                        payload = response.json()
+                        st.session_state.auth_access_token = payload.get("access_token")
+                        st.session_state.auth_email = payload.get("user", {}).get("email", email.strip())
+                        st.rerun()
+                    else:
+                        st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
+                except requests.RequestException:
+                    st.error("暂时无法连接账号认证服务，请检查 Supabase Project URL 和网络状态。")
         with register_tab:
             new_email = st.text_input("注册邮箱", key="register_email")
             new_password = st.text_input("设置密码（至少6位）", type="password", key="register_password")
@@ -104,13 +112,17 @@ def authentication_gate():
                 elif new_password != confirm_password:
                     st.error("两次输入的密码不一致。")
                 else:
-                    response = requests.post(f"{url}/auth/v1/signup", headers=headers,
-                                             json={"email": new_email.strip(), "password": new_password}, timeout=15)
-                    if response.ok:
-                        st.success("注册成功。若已开启邮箱验证，请先查收验证邮件，然后返回登录。")
-                    else:
-                        message = response.json().get("msg", "注册失败") if response.headers.get("content-type", "").startswith("application/json") else "注册失败"
-                        st.error(message)
+                    try:
+                        response = requests.post(f"{url}/auth/v1/signup", headers=headers,
+                                                 json={"email": new_email.strip(), "password": new_password}, timeout=15)
+                        if response.ok:
+                            st.success("注册成功。若已开启邮箱验证，请先查收验证邮件，然后返回登录。")
+                        else:
+                            content_type = response.headers.get("content-type", "")
+                            message = response.json().get("msg", "注册失败") if content_type.startswith("application/json") else "注册失败"
+                            st.error(message)
+                    except requests.RequestException:
+                        st.error("暂时无法连接账号认证服务，请检查 Supabase Project URL 和网络状态。")
     st.stop()
 
 
