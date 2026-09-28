@@ -24,7 +24,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.4.1"
+APP_VERSION = "v0.4.2"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -387,6 +387,15 @@ def query_page():
         st.info("请至少选择一个表格显示列。")
 
 
+def set_active_page(page_name):
+    """Update navigation state before Streamlit redraws the sidebar."""
+    st.session_state.active_page = page_name
+
+
+def toggle_training_menu():
+    st.session_state.training_menu_open = not st.session_state.training_menu_open
+
+
 with st.sidebar:
     st.image(str(LOGO_FILE), width=220)
     st.caption("SOFC 阴极材料智能分析平台")
@@ -395,22 +404,24 @@ with st.sidebar:
     if "training_menu_open" not in st.session_state:
         st.session_state.training_menu_open = False
 
-    if st.button("◇  ASR预测", type="primary" if st.session_state.active_page == "ASR预测" else "secondary"):
-        st.session_state.active_page = "ASR预测"
+    st.button("◇  ASR预测", type="primary" if st.session_state.active_page == "ASR预测" else "secondary",
+              on_click=set_active_page, args=("ASR预测",))
     training_active = st.session_state.active_page in {"内置数据集训练", "自定义数据集训练"}
-    if st.button("▦  模型训练", type="primary" if training_active else "secondary"):
-        st.session_state.training_menu_open = not st.session_state.training_menu_open
+    st.button("▦  模型训练", type="primary" if training_active else "secondary",
+              on_click=toggle_training_menu)
     if st.session_state.training_menu_open:
         _, child_area = st.columns([.11, .89])
         with child_area:
-            if st.button("01  内置数据集训练", type="primary" if st.session_state.active_page == "内置数据集训练" else "secondary"):
-                st.session_state.active_page = "内置数据集训练"
-            if st.button("02  自定义数据集训练", type="primary" if st.session_state.active_page == "自定义数据集训练" else "secondary"):
-                st.session_state.active_page = "自定义数据集训练"
-    if st.button("⇧  数据上传", type="primary" if st.session_state.active_page == "数据上传" else "secondary"):
-        st.session_state.active_page = "数据上传"
-    if st.button("⌕  数据查询", type="primary" if st.session_state.active_page == "数据查询" else "secondary"):
-        st.session_state.active_page = "数据查询"
+            st.button("01  内置数据集训练",
+                      type="primary" if st.session_state.active_page == "内置数据集训练" else "secondary",
+                      on_click=set_active_page, args=("内置数据集训练",))
+            st.button("02  自定义数据集训练",
+                      type="primary" if st.session_state.active_page == "自定义数据集训练" else "secondary",
+                      on_click=set_active_page, args=("自定义数据集训练",))
+    st.button("⇧  数据上传", type="primary" if st.session_state.active_page == "数据上传" else "secondary",
+              on_click=set_active_page, args=("数据上传",))
+    st.button("⌕  数据查询", type="primary" if st.session_state.active_page == "数据查询" else "secondary",
+              on_click=set_active_page, args=("数据查询",))
     page = st.session_state.active_page
     st.markdown(f'<div class="version">当前版本：{APP_VERSION}</div>', unsafe_allow_html=True)
 
