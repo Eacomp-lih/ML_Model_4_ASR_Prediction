@@ -24,7 +24,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.4.4"
+APP_VERSION = "v0.4.5"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -45,7 +45,8 @@ st.markdown("""
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){background:#eaf2ff;color:#1768e5;font-weight:700;box-shadow:inset -4px 0 #237ef5}
 [data-testid="stSidebar"] [role="radiogroup"] input{display:none!important}
 [data-testid="stSidebar"] [role="radiogroup"] label>div>div:first-child{display:none!important}
-[data-testid="stSidebar"] .stButton>button{width:100%;justify-content:flex-start;text-align:left;padding:.55rem .7rem}
+[data-testid="stSidebar"] .stButton,[data-testid="stSidebar"] .stButton>button{width:100%}
+[data-testid="stSidebar"] .stButton>button{justify-content:flex-start;text-align:left;padding:.55rem .7rem}
 </style>""", unsafe_allow_html=True)
 
 
@@ -413,9 +414,9 @@ with st.sidebar:
         st.session_state.training_menu_open = False
 
     st.button("◇  ASR预测", type="primary" if st.session_state.active_module == "ASR预测" else "secondary",
-              on_click=set_active_page, args=("ASR预测", "ASR预测"))
+              on_click=set_active_page, args=("ASR预测", "ASR预测"), use_container_width=True)
     st.button("▦  模型训练", type="primary" if st.session_state.active_module == "模型训练" else "secondary",
-              on_click=toggle_training_menu)
+              on_click=toggle_training_menu, use_container_width=True)
     if st.session_state.training_menu_open:
         _, child_area = st.columns([.11, .89])
         with child_area:
@@ -426,9 +427,9 @@ with st.sidebar:
                       type="primary" if st.session_state.active_page == "自定义数据集训练" else "secondary",
                       on_click=set_active_page, args=("自定义数据集训练", "模型训练", True))
     st.button("⇧  数据上传", type="primary" if st.session_state.active_module == "数据上传" else "secondary",
-              on_click=set_active_page, args=("数据上传", "数据上传"))
+              on_click=set_active_page, args=("数据上传", "数据上传"), use_container_width=True)
     st.button("⌕  数据查询", type="primary" if st.session_state.active_module == "数据查询" else "secondary",
-              on_click=set_active_page, args=("数据查询", "数据查询"))
+              on_click=set_active_page, args=("数据查询", "数据查询"), use_container_width=True)
     page = st.session_state.active_page
     st.markdown(f'<div class="version">当前版本：{APP_VERSION}</div>', unsafe_allow_html=True)
 
