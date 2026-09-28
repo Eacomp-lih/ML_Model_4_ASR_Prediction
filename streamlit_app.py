@@ -29,7 +29,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.7.0"
+APP_VERSION = "v0.7.1"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -97,9 +97,11 @@ def get_auth_config():
     return auth, url, key
 
 
-@st.cache_resource
+COOKIE_MANAGER = stx.CookieManager(key="asr_auth_cookies")
+
+
 def get_cookie_manager():
-    return stx.CookieManager(key="asr_auth_cookies")
+    return COOKIE_MANAGER
 
 
 def remember_login(payload):
