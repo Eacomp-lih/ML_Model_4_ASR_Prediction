@@ -50,6 +50,8 @@ class _PCAApplicability:
         pca = PCA(n_components=2)
         train_z = scaler.fit_transform(imputer.fit_transform(train[cols]))
         train_scores = pca.fit_transform(train_z)
+        self.training_rows = train.reset_index(drop=True)
+        self.training_scores = train_scores
 
         reference_idx, calibration_idx = train_test_split(
             np.arange(len(train)), test_size=0.20, shuffle=True, random_state=42
@@ -60,6 +62,9 @@ class _PCAApplicability:
         calibration_pc_z = self.pc_scaler.transform(train_scores[calibration_idx])
         self.knn = NearestNeighbors(n_neighbors=min(5, len(reference_idx))).fit(reference_pc_z)
         self.calibration_distance = self.knn.kneighbors(calibration_pc_z)[0][:, -1]
+        self.all_neighbors = NearestNeighbors(n_neighbors=min(3, len(train_scores))).fit(
+            self.pc_scaler.transform(train_scores)
+        )
 
     def score(self, frame: pd.DataFrame) -> tuple[float, str, float]:
         x = frame.reindex(columns=self.feature_columns)
@@ -68,6 +73,31 @@ class _PCAApplicability:
         distance = float(self.knn.kneighbors(target_pc_z)[0][0, -1])
         p_value = float((1 + (self.calibration_distance >= distance).sum()) / (len(self.calibration_distance) + 1))
         return 100.0 * p_value, ("inside" if p_value > 0.2 else "outside"), distance
+
+    def details(self, frame: pd.DataFrame) -> dict[str, Any]:
+        x = frame.reindex(columns=self.feature_columns)
+        target_scores = self.pca.transform(self.scaler.transform(self.imputer.transform(x)))
+        target_pc_z = self.pc_scaler.transform(target_scores)
+        distances, indices = self.all_neighbors.kneighbors(target_pc_z)
+        nearest = []
+        for distance, index in zip(distances[0], indices[0]):
+            row = self.training_rows.iloc[int(index)]
+            electrolyte_cols = [c for c in row.index if str(c).startswith("electrolyte_")]
+            electrolyte = ""
+            if electrolyte_cols:
+                electrolyte = str(max(electrolyte_cols, key=lambda c: float(row.get(c, 0) or 0))).replace("electrolyte_", "")
+            nearest.append({
+                "Composition": str(row.get("Composition", f"训练样本 {int(index) + 1}")),
+                "electrolyte": electrolyte,
+                "Log_ASR": float(row.get("Log_ASR", np.nan)),
+                "distance": float(distance),
+            })
+        return {
+            "target_scores": target_scores[0].tolist(),
+            "training_scores": self.training_scores.tolist(),
+            "nearest_materials": nearest,
+            "explained_variance_ratio": self.pca.explained_variance_ratio_.tolist(),
+        }
 
 
 def _load_feature_generator(notebook_path: Path):
@@ -97,7 +127,10 @@ class ASRPredictor:
         self.metadata = json.loads(Path(metadata_path).read_text(encoding="utf-8"))
         self.feature_columns = list(self.metadata["feature_columns"])
         self._make_features, self._split_ab = _load_feature_generator(Path(feature_notebook).resolve())
-        self.pca_applicability = _PCAApplicability(Path(training_data).resolve(), self.feature_columns)
+        training_path = Path(training_data).resolve()
+        self.training_data = pd.read_excel(training_path, sheet_name="features")
+        self.feature_medians = self.training_data[self.feature_columns].median(numeric_only=True)
+        self.pca_applicability = _PCAApplicability(training_path, self.feature_columns)
         self.models = {}
         for name in MODEL_NAMES:
             path = self.model_dir / f"{name}_final.joblib"
@@ -150,6 +183,23 @@ class ASRPredictor:
         frame, audit = self.build_features(formula, electrolyte)
         log_asr = float(np.asarray(self.models[model_name].predict(frame)).reshape(-1)[0])
         reliability, domain, pca_distance = self.pca_applicability.score(frame)
+        pca_details = self.pca_applicability.details(frame)
+        impacts = []
+        baseline = log_asr
+        for feature in self.feature_columns:
+            median = self.feature_medians.get(feature, np.nan)
+            if pd.isna(median):
+                continue
+            changed = frame.copy()
+            changed.at[0, feature] = float(median)
+            changed_prediction = float(np.asarray(self.models[model_name].predict(changed)).reshape(-1)[0])
+            impacts.append({
+                "feature": feature,
+                "value": float(frame.at[0, feature]),
+                "reference_median": float(median),
+                "impact": float(baseline - changed_prediction),
+            })
+        impacts.sort(key=lambda item: abs(item["impact"]), reverse=True)
         result = {
             "model": model_name,
             "formula": str(formula).strip(),
@@ -160,6 +210,9 @@ class ASRPredictor:
             "reliability_score": round(reliability, 5),
             "pca_domain": domain,
             "pca_distance": round(pca_distance, 5),
+            "reliability_level": "高" if reliability >= 70 else ("中" if reliability >= 30 else "低"),
+            "pca_details": pca_details,
+            "feature_impacts": impacts[:10],
             "feature_row": frame.iloc[0].to_dict(),
             "audit": audit,
         }

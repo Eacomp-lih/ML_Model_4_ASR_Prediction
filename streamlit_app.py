@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import io
+from datetime import datetime
 from pathlib import Path
 
 import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import requests
 import streamlit as st
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
@@ -24,7 +26,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.4.5"
+APP_VERSION = "v0.5.0"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -48,6 +50,67 @@ st.markdown("""
 [data-testid="stSidebar"] .stButton,[data-testid="stSidebar"] .stButton>button{width:100%}
 [data-testid="stSidebar"] .stButton>button{justify-content:flex-start;text-align:left;padding:.55rem .7rem}
 </style>""", unsafe_allow_html=True)
+
+
+def authentication_gate():
+    try:
+        auth = dict(st.secrets.get("auth", {}))
+    except Exception:
+        auth = {}
+    if not auth.get("required", False):
+        return
+    url = str(auth.get("supabase_url", "")).rstrip("/")
+    key = str(auth.get("supabase_anon_key", ""))
+    if not url or not key:
+        st.error("账号系统已启用，但尚未配置 Supabase URL 或匿名公钥。请联系管理员。")
+        st.stop()
+    if st.session_state.get("auth_access_token"):
+        with st.sidebar:
+            st.caption(f'当前账号：{st.session_state.get("auth_email", "已登录用户")}')
+            if st.button("退出登录", use_container_width=True):
+                st.session_state.pop("auth_access_token", None)
+                st.session_state.pop("auth_email", None)
+                st.rerun()
+        return
+    st.image(str(LOGO_FILE), width=260)
+    heading_text = '<div class="page-title">用户登录</div><div class="page-subtitle">注册账号并登录后方可使用材料预测平台。</div>'
+    st.markdown(heading_text, unsafe_allow_html=True)
+    login_tab, register_tab = st.tabs(["登录", "注册"])
+    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+    with login_tab:
+        email = st.text_input("邮箱", key="login_email")
+        password = st.text_input("密码", type="password", key="login_password")
+        if st.button("登录", type="primary", use_container_width=True):
+            response = requests.post(f"{url}/auth/v1/token?grant_type=password", headers=headers,
+                                     json={"email": email.strip(), "password": password}, timeout=15)
+            if response.ok:
+                payload = response.json()
+                st.session_state.auth_access_token = payload.get("access_token")
+                st.session_state.auth_email = payload.get("user", {}).get("email", email.strip())
+                st.rerun()
+            else:
+                st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
+    with register_tab:
+        new_email = st.text_input("注册邮箱", key="register_email")
+        new_password = st.text_input("设置密码（至少6位）", type="password", key="register_password")
+        confirm_password = st.text_input("确认密码", type="password", key="register_password_confirm")
+        if st.button("创建账号", use_container_width=True):
+            if len(new_password) < 6:
+                st.error("密码至少需要6位。")
+            elif new_password != confirm_password:
+                st.error("两次输入的密码不一致。")
+            else:
+                response = requests.post(f"{url}/auth/v1/signup", headers=headers,
+                                         json={"email": new_email.strip(), "password": new_password}, timeout=15)
+                if response.ok:
+                    st.success("注册成功。若已开启邮箱验证，请先查收验证邮件，然后返回登录。")
+                else:
+                    message = response.json().get("msg", "注册失败") if response.headers.get("content-type", "").startswith("application/json") else "注册失败"
+                    st.error(message)
+    st.stop()
+
+
+authentication_gate()
 
 
 @st.cache_resource(show_spinner="正在加载模型与适用域分析器…")
@@ -201,7 +264,53 @@ def metric_row(title, y_true, prediction):
     c3.metric("RMSE", f"{np.sqrt(mean_squared_error(y_true, prediction)):.5f}")
 
 
-def fit_and_report(X, y, model, filename, split_config):
+def metric_values(y_true, prediction):
+    return {
+        "R²": float(r2_score(y_true, prediction)),
+        "MAE": float(mean_absolute_error(y_true, prediction)),
+        "RMSE": float(np.sqrt(mean_squared_error(y_true, prediction))),
+    }
+
+
+def training_visualizations(y_true, prediction, title):
+    chart = pd.DataFrame({"真实值": y_true, "预测值": prediction})
+    chart["残差"] = chart["真实值"] - chart["预测值"]
+    left, right = st.columns(2)
+    parity = px.scatter(chart, x="真实值", y="预测值", title=f"{title}：真实值—预测值")
+    low = float(min(chart["真实值"].min(), chart["预测值"].min()))
+    high = float(max(chart["真实值"].max(), chart["预测值"].max()))
+    parity.add_shape(type="line", x0=low, y0=low, x1=high, y1=high, line={"dash":"dash", "color":"#64748b"})
+    left.plotly_chart(parity, use_container_width=True, config={"displaylogo": False})
+    residual = px.scatter(chart, x="预测值", y="残差", title=f"{title}：残差图")
+    residual.add_hline(y=0, line_dash="dash", line_color="#64748b")
+    right.plotly_chart(residual, use_container_width=True, config={"displaylogo": False})
+    hist = px.histogram(chart, x="残差", nbins=min(30, max(8, len(chart) // 3)), title=f"{title}：误差分布")
+    st.plotly_chart(hist, use_container_width=True, config={"displaylogo": False})
+
+
+def save_training_history(record):
+    history = st.session_state.setdefault("training_history", [])
+    history.insert(0, record)
+    del history[5:]
+
+
+def render_training_history():
+    history = st.session_state.get("training_history", [])
+    if not history:
+        return
+    st.markdown("### 最近训练任务")
+    table = pd.DataFrame([{k: v for k, v in item.items() if k not in {"model_bytes", "parameters", "cv_scores"}} for item in history])
+    st.dataframe(table, use_container_width=True, hide_index=True)
+    metric_table = table[["模型", "测试R²", "测试MAE", "测试RMSE"]].copy()
+    metric_long = metric_table.melt(id_vars="模型", var_name="指标", value_name="数值")
+    st.plotly_chart(px.bar(metric_long, x="模型", y="数值", color="指标", barmode="group", title="最近训练模型指标对比"),
+                    use_container_width=True, config={"displaylogo": False})
+    best = max(history, key=lambda item: item["测试R²"])
+    st.download_button(f'下载当前最佳模型（{best["模型"]}，测试R²={best["测试R²"]:.5f}）',
+                       best["model_bytes"], best["文件名"], "application/octet-stream")
+
+
+def fit_and_report(X, y, model, filename, split_config, *, model_name, parameters, source):
     if len(X) < 10:
         raise ValueError("至少需要10条有效数据")
     if len(X) < 50:
@@ -234,8 +343,26 @@ def fit_and_report(X, y, model, filename, split_config):
         c2.metric("平均 MAE", f'{-scores["test_mae"].mean():.5f}', f'±{scores["test_mae"].std():.5f}')
         c3.metric("平均 RMSE", f'{-scores["test_rmse"].mean():.5f}', f'±{scores["test_rmse"].std():.5f}')
     metric_row("独立测试集表现（训练集+验证集重新拟合）", y_test, test_pred)
+    training_visualizations(y_test, test_pred, "独立测试集")
+    if use_cv:
+        cv_frame = pd.DataFrame({
+            "折次": np.arange(1, 6), "R²": scores["test_r2"],
+            "MAE": -scores["test_mae"], "RMSE": -scores["test_rmse"],
+        })
+        cv_long = cv_frame.melt(id_vars="折次", var_name="指标", value_name="数值")
+        st.plotly_chart(px.line(cv_long, x="折次", y="数值", color="指标", markers=True, title="5-fold 各折评估结果"),
+                        use_container_width=True, config={"displaylogo": False})
     buf = io.BytesIO(); joblib.dump(model, buf)
-    st.download_button("下载训练后的模型", buf.getvalue(), filename, "application/octet-stream")
+    model_bytes = buf.getvalue()
+    test_metrics = metric_values(y_test, test_pred)
+    save_training_history({
+        "时间": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "来源": source, "模型": model_name,
+        "数据量": len(X), "随机种子": random_seed, "训练/验证/测试": f"{train_pct}/{val_pct}/{test_pct}",
+        "5-fold": "是" if use_cv else "否", "测试R²": test_metrics["R²"],
+        "测试MAE": test_metrics["MAE"], "测试RMSE": test_metrics["RMSE"],
+        "参数": str(parameters), "parameters": parameters, "model_bytes": model_bytes, "文件名": filename,
+    })
+    st.download_button("下载训练后的模型", model_bytes, filename, "application/octet-stream")
 
 
 def prediction_page():
@@ -254,7 +381,8 @@ def prediction_page():
             fields = [("使用模型", r["model"].upper()), ("材料化学式", r["formula"]), ("电解质类型", r["electrolyte"]),
                       ("结构类型", r["structure_type"]), ("Log_ASR", f'{r["Log_ASR"]:.5f}'),
                       ("ASR（Ω·cm²）", f'{r["ASR"]:.5f}'), ("PCA可靠性得分（%）", f'{r["reliability_score"]:.5f}'),
-                      ("PCA适用域判断", r["pca_domain"]), ("PCA-kNN距离", f'{r["pca_distance"]:.5f}')]
+                      ("可靠性等级", r["reliability_level"]), ("PCA适用域判断", r["pca_domain"]),
+                      ("PCA-kNN距离", f'{r["pca_distance"]:.5f}')]
             cols = st.columns(3)
             for i, (label, value) in enumerate(fields):
                 css = "score" if "可靠性" in label else "value"
@@ -263,6 +391,39 @@ def prediction_page():
                 st.warning(f'可靠性说明：该样本位于训练数据适用域外，得分为 {r["reliability_score"]:.5f}%。这表示它与训练数据特征分布差异较大，请谨慎使用预测结果；该分数不是预测准确率。')
             else:
                 st.info(f'可靠性说明：该样本位于训练数据适用域内，得分为 {r["reliability_score"]:.5f}%。分数表示它与训练数据特征分布的相似程度，越高通常越值得参考；该分数不是预测准确率。')
+            level_explanation = {
+                "高": "输入材料与训练集特征分布高度相似，预测通常具有较好的参考价值。",
+                "中": "输入材料与训练集存在一定相似性，但部分特征可能处于样本稀疏区域，建议结合实验或其他模型复核。",
+                "低": "输入材料远离主要训练分布，属于外推预测，应谨慎解释并优先进行实验验证。",
+            }
+            st.markdown(f'**{r["reliability_level"]}可靠性：** {level_explanation[r["reliability_level"]]}')
+            st.markdown("### PCA适用域分析")
+            details = r["pca_details"]
+            pca_frame = pd.DataFrame(details["training_scores"], columns=["PC1", "PC2"])
+            if len(pca_frame) > 1500:
+                pca_frame = pca_frame.sample(1500, random_state=42)
+            pca_frame["类型"] = "训练数据"
+            target_frame = pd.DataFrame([[*details["target_scores"], "输入材料"]], columns=["PC1", "PC2", "类型"])
+            pca_plot = pd.concat([pca_frame, target_frame], ignore_index=True)
+            fig = px.scatter(pca_plot, x="PC1", y="PC2", color="类型", symbol="类型",
+                             color_discrete_map={"训练数据":"#94a3b8", "输入材料":"#ef4444"},
+                             title="输入材料在PCA空间中的位置")
+            fig.update_traces(marker={"size": 7, "opacity": .65})
+            fig.update_traces(selector={"name":"输入材料"}, marker={"size": 16, "opacity": 1, "line":{"width":2,"color":"white"}})
+            st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+            nearest = pd.DataFrame(details["nearest_materials"]).rename(columns={
+                "electrolyte":"电解质", "Log_ASR":"Log_ASR", "distance":"PCA标准化距离"
+            })
+            st.markdown("#### 最近的3个训练材料")
+            st.dataframe(nearest.round(5), use_container_width=True, hide_index=True)
+            st.markdown("### 预测可解释性")
+            st.caption("下图表示将单个特征替换为训练集中位数后，当前预测值的变化。正值表示该特征使预测Log_ASR升高，负值表示使其降低；结果反映局部模型敏感度，不代表因果关系。")
+            impacts = pd.DataFrame(r["feature_impacts"]).sort_values("impact")
+            impact_fig = px.bar(impacts, x="impact", y="feature", orientation="h", color="impact",
+                                color_continuous_scale="RdBu_r", labels={"impact":"对Log_ASR的局部影响", "feature":"特征"})
+            st.plotly_chart(impact_fig, use_container_width=True, config={"displaylogo": False})
+            st.dataframe(impacts[["feature", "value", "reference_median", "impact"]].round(5),
+                         use_container_width=True, hide_index=True)
             if r["audit"].get("warning"):
                 st.info(f'化学计量/价态提示：{r["audit"]["warning"]}')
         except Exception as exc:
@@ -294,7 +455,9 @@ def training_page(mode="overview"):
                 data = get_training_data(); features = get_predictor().feature_columns
                 if name == "ANN" and not params.get("hidden_layer_sizes"): raise ValueError("隐藏层格式无效")
                 model = new_model(name, params, split_config[3])
-                fit_and_report(data[features], data["Log_ASR"].to_numpy(), model, f"builtin_{name.lower()}.joblib", split_config)
+                fit_and_report(data[features], data["Log_ASR"].to_numpy(), model,
+                               f"builtin_{name.lower()}.joblib", split_config,
+                               model_name=name, parameters=params, source="内置数据集")
             except Exception as exc: st.error(f"训练失败：{exc}")
     else:
         st.markdown('<div class="note">默认将 Composition 和 ASR 之外的全部列作为训练特征。字符列会自动独热编码，数值列会自动补全并标准化。数据量过少时，结果可能不准确。</div>', unsafe_allow_html=True)
@@ -322,8 +485,58 @@ def training_page(mode="overview"):
                 categorical = [c for c in feature_cols if c not in numeric]
                 if name == "ANN" and not params.get("hidden_layer_sizes"): raise ValueError("隐藏层格式无效")
                 model = custom_model(name, params, numeric, categorical, split_config[3])
-                fit_and_report(X, np.log10(rows["ASR"].to_numpy()), model, f"custom_{name.lower()}.joblib", split_config)
+                fit_and_report(X, np.log10(rows["ASR"].to_numpy()), model,
+                               f"custom_{name.lower()}.joblib", split_config,
+                               model_name=name, parameters=params, source="用户数据集")
             except Exception as exc: st.error(f"训练失败：{exc}")
+    render_training_history()
+
+
+def inspect_uploaded_data(raw):
+    issues = []
+    duplicate_columns = raw.columns[raw.columns.duplicated()].tolist()
+    if duplicate_columns:
+        issues.append(("错误", "重复列名", f"发现重复列：{duplicate_columns}"))
+    required = {"Composition", "electrolyte", "ASR"}
+    missing_columns = sorted(required - set(raw.columns))
+    if missing_columns:
+        issues.append(("错误", "缺少必要列", f"缺少：{missing_columns}"))
+        return issues, None
+    work = raw.copy()
+    missing_counts = work[["Composition", "electrolyte", "ASR"]].isna().sum()
+    for column, count in missing_counts.items():
+        if count:
+            issues.append(("错误", "缺失值", f"{column} 列存在 {int(count)} 个缺失值"))
+    numeric_asr = pd.to_numeric(work["ASR"], errors="coerce")
+    invalid_numeric = int((numeric_asr.isna() & work["ASR"].notna()).sum())
+    if invalid_numeric:
+        issues.append(("错误", "数值格式", f"ASR 列存在 {invalid_numeric} 个无法转换为数值的单元格"))
+    nonpositive = int((numeric_asr <= 0).fillna(False).sum())
+    if nonpositive:
+        issues.append(("错误", "ASR范围", f"发现 {nonpositive} 个非正ASR值"))
+    invalid_electrolytes = sorted(set(work["electrolyte"].dropna().astype(str).str.strip()) - set(ELECTROLYTES))
+    if invalid_electrolytes:
+        issues.append(("错误", "非法电解质", f"不支持：{invalid_electrolytes}"))
+    duplicate_mask = work.duplicated(subset=["Composition", "electrolyte", "ASR"], keep=False)
+    duplicate_count = int(duplicate_mask.sum())
+    if duplicate_count:
+        issues.append(("警告", "重复样本", f"发现 {duplicate_count} 行重复记录；整理结果将保留第一条"))
+    valid_values = numeric_asr[(numeric_asr > 0) & numeric_asr.notna()]
+    if len(valid_values) >= 4:
+        logs = np.log10(valid_values)
+        q1, q3 = logs.quantile([.25, .75]); iqr = q3 - q1
+        outlier_mask = (np.log10(numeric_asr.where(numeric_asr > 0)) < q1 - 1.5 * iqr) | (np.log10(numeric_asr.where(numeric_asr > 0)) > q3 + 1.5 * iqr)
+        outlier_count = int(outlier_mask.fillna(False).sum())
+        if outlier_count:
+            issues.append(("警告", "异常ASR", f"按Log_ASR的1.5×IQR规则识别到 {outlier_count} 个潜在异常值，请人工复核"))
+    if not issues:
+        issues.append(("通过", "完整校验", "未发现重复、缺失、异常格式或非法类别"))
+    has_error = any(level == "错误" for level, _, _ in issues)
+    if has_error:
+        return issues, None
+    work["ASR"] = numeric_asr
+    work = work.drop_duplicates(subset=["Composition", "electrolyte", "ASR"], keep="first")
+    return issues, normalize_rows(work)
 
 
 def upload_page():
@@ -332,7 +545,14 @@ def upload_page():
     upload = st.file_uploader("上传数据（CSV/XLSX）", type=["csv", "xlsx"], key="data")
     if upload:
         try:
-            rows = normalize_rows(read_table(upload)); view = rows[["Composition", "electrolyte", "Log_ASR"]].copy()
+            issues, rows = inspect_uploaded_data(read_table(upload))
+            report = pd.DataFrame(issues, columns=["级别", "检查项目", "结果"])
+            st.markdown("### 数据质量校验报告")
+            st.dataframe(report, use_container_width=True, hide_index=True)
+            if rows is None:
+                st.error("数据存在必须修正的错误，暂不生成整理结果。")
+                return
+            view = rows[["Composition", "electrolyte", "Log_ASR"]].copy()
             view["ASR"] = np.power(10., view["Log_ASR"]); st.session_state["uploaded_data"] = view
             st.success(f"通过校验：{len(view)} 条数据"); st.dataframe(view, use_container_width=True, hide_index=True)
             st.download_button("下载校验后的CSV", view.to_csv(index=False).encode("utf-8-sig"), "validated_asr_data.csv", "text/csv")
