@@ -24,7 +24,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.3.0"
+APP_VERSION = "v0.4.0"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -45,6 +45,7 @@ st.markdown("""
 [data-testid="stSidebar"] [role="radiogroup"] label:has(input:checked){background:#eaf2ff;color:#1768e5;font-weight:700;box-shadow:inset -4px 0 #237ef5}
 [data-testid="stSidebar"] [role="radiogroup"] input{display:none!important}
 [data-testid="stSidebar"] [role="radiogroup"] label>div>div:first-child{display:none!important}
+[data-testid="stSidebar"] .stButton>button{width:100%;justify-content:flex-start;text-align:left;padding:.55rem .7rem}
 </style>""", unsafe_allow_html=True)
 
 
@@ -346,46 +347,73 @@ def query_page():
     span = st.slider("650℃下ASR范围（Ω·cm²）", low, high, (low, high))
     mask = data["电解质"].isin(electrolyte) & data["ASR（Ω·cm²）"].between(*span)
     if keyword: mask &= data["Composition"].astype(str).str.contains(keyword, case=False, regex=False)
-    axis_options = {
-        "Goldschmidt 容忍因子": "tolerance_factor",
-        "B位平均氧化态": "B_site_oxidation",
-        "O/B 化学计量比": "oxygen_per_B",
-        "组成熵": "composition_entropy",
+    numeric_columns = data.select_dtypes(include=np.number).columns.tolist()
+    axis_labels = {
+        "tolerance_factor": "Goldschmidt 容忍因子",
+        "B_site_oxidation": "B位平均氧化态",
+        "oxygen_per_B": "O/B 化学计量比",
+        "composition_entropy": "组成熵",
+        "ASR（Ω·cm²）": "ASR（Ω·cm²）",
         "Log_ASR": "Log_ASR",
     }
-    axis_label = st.selectbox("交互图横轴", list(axis_options), help="选择具有材料学或预测意义的横轴变量")
-    x_col = axis_options[axis_label]
-    result = data.loc[mask, ["Composition", "电解质", "Log_ASR", "ASR（Ω·cm²）", x_col]].copy()
-    result = result.loc[:, ~result.columns.duplicated()]
+    label_to_column = {axis_labels.get(col, col): col for col in numeric_columns}
+    axis_names = list(label_to_column)
+    default_x = axis_names.index("Goldschmidt 容忍因子") if "Goldschmidt 容忍因子" in axis_names else 0
+    default_y = axis_names.index("ASR（Ω·cm²）") if "ASR（Ω·cm²）" in axis_names else min(1, len(axis_names) - 1)
+    x_box, y_box = st.columns(2)
+    x_label = x_box.selectbox("交互图横轴", axis_names, index=default_x)
+    y_label = y_box.selectbox("交互图纵轴", axis_names, index=default_y)
+    x_col, y_col = label_to_column[x_label], label_to_column[y_label]
+    result = data.loc[mask].copy()
     st.caption(f"共找到 {len(result)} 条记录")
+    if x_col == y_col:
+        st.info("当前横纵轴选择了同一变量，可选择另一变量以观察相关关系。")
     if not result.empty:
-        fig = px.scatter(result, x=x_col, y="ASR（Ω·cm²）", color="电解质", hover_name="Composition",
-                         hover_data={"Log_ASR": ":.5f", "ASR（Ω·cm²）": ":.5f", x_col: ":.5f"},
-                         labels={x_col: axis_label}, color_discrete_sequence=px.colors.qualitative.Safe)
+        hover_columns = [c for c in ["Log_ASR", "ASR（Ω·cm²）", x_col, y_col] if c in result]
+        hover_data = {c: ":.5f" for c in dict.fromkeys(hover_columns)}
+        fig = px.scatter(result, x=x_col, y=y_col, color="电解质", hover_name="Composition",
+                         hover_data=hover_data, labels={x_col: x_label, y_col: y_label},
+                         color_discrete_sequence=px.colors.qualitative.Safe)
         fig.update_traces(marker={"size": 9, "opacity": .78, "line": {"width": .5, "color": "white"}})
         fig.update_layout(height=430, margin=dict(l=10, r=10, t=25, b=10), hovermode="closest", legend_title_text="电解质")
         st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
-    st.dataframe(result.round(5), use_container_width=True, hide_index=True, height=440)
+    default_columns = ["Composition", "电解质", "ASR（Ω·cm²）", "Log_ASR"]
+    shown_columns = st.multiselect("表格显示列", list(data.columns), default=default_columns,
+                                   help="增删选项即可决定下方表格显示哪些字段")
+    if shown_columns:
+        st.dataframe(result[shown_columns].round(5), use_container_width=True, hide_index=True, height=440)
+    else:
+        st.info("请至少选择一个表格显示列。")
 
 
 with st.sidebar:
     st.image(str(LOGO_FILE), width=220)
     st.caption("SOFC 阴极材料智能分析平台")
-    nav = {
-        "⌁  ASR预测":"ASR预测",
-        "⚙  模型训练":"模型训练",
-        "　　↳ 内置数据集训练":"内置数据集训练",
-        "　　↳ 自定义数据集训练":"自定义数据集训练",
-        "⇧  数据上传":"数据上传",
-        "▦  数据查询":"数据查询",
-    }
-    selected = st.radio("功能导航", list(nav), label_visibility="collapsed")
-    page = nav[selected]
+    if "active_page" not in st.session_state:
+        st.session_state.active_page = "ASR预测"
+    if "training_menu_open" not in st.session_state:
+        st.session_state.training_menu_open = False
+
+    if st.button("⚡  ASR预测", type="primary" if st.session_state.active_page == "ASR预测" else "secondary"):
+        st.session_state.active_page = "ASR预测"
+    training_active = st.session_state.active_page in {"内置数据集训练", "自定义数据集训练"}
+    if st.button("🧠  模型训练", type="primary" if training_active else "secondary"):
+        st.session_state.training_menu_open = not st.session_state.training_menu_open
+    if st.session_state.training_menu_open:
+        _, child_area = st.columns([.11, .89])
+        with child_area:
+            if st.button("↳  内置数据集训练", type="primary" if st.session_state.active_page == "内置数据集训练" else "secondary"):
+                st.session_state.active_page = "内置数据集训练"
+            if st.button("↳  自定义数据集训练", type="primary" if st.session_state.active_page == "自定义数据集训练" else "secondary"):
+                st.session_state.active_page = "自定义数据集训练"
+    if st.button("☁  数据上传", type="primary" if st.session_state.active_page == "数据上传" else "secondary"):
+        st.session_state.active_page = "数据上传"
+    if st.button("🔍  数据查询", type="primary" if st.session_state.active_page == "数据查询" else "secondary"):
+        st.session_state.active_page = "数据查询"
+    page = st.session_state.active_page
     st.markdown(f'<div class="version">当前版本：{APP_VERSION}</div>', unsafe_allow_html=True)
 
-if page == "模型训练":
-    training_page("overview")
-elif page == "内置数据集训练":
+if page == "内置数据集训练":
     training_page("builtin")
 elif page == "自定义数据集训练":
     training_page("custom")
