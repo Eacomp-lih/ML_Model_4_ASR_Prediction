@@ -24,7 +24,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.4.3"
+APP_VERSION = "v0.4.4"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -351,7 +351,6 @@ def query_page():
     axis_labels = {
         "tolerance_factor": "Goldschmidt 容忍因子",
         "B_site_oxidation": "B位平均氧化态",
-        "B_site_Lewis_acid_strength": "B位路易斯酸强度",
         "oxygen_per_B": "O/B 化学计量比",
         "composition_entropy": "组成熵",
         "ASR（Ω·cm²）": "ASR（Ω·cm²）",
@@ -359,7 +358,7 @@ def query_page():
     }
     label_to_column = {axis_labels.get(col, col): col for col in numeric_columns}
     axis_names = list(label_to_column)
-    default_x = axis_names.index("B位路易斯酸强度") if "B位路易斯酸强度" in axis_names else 0
+    default_x = axis_names.index("B_site_Lewis_acid_strength") if "B_site_Lewis_acid_strength" in axis_names else 0
     default_y = axis_names.index("Log_ASR") if "Log_ASR" in axis_names else min(1, len(axis_names) - 1)
     x_box, y_box = st.columns(2)
     x_label = x_box.selectbox("交互图横轴", axis_names, index=default_x)
