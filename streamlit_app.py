@@ -26,7 +26,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.5.0"
+APP_VERSION = "v0.5.1"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -41,6 +41,7 @@ st.markdown("""
 .note{background:#edf5ff;border-left:4px solid #237ef5;padding:.75rem 1rem;border-radius:7px;color:#36516d}div.stButton>button{border-radius:9px;font-weight:650}
 .version{position:fixed;bottom:18px;left:24px;color:#94a3b8;font-size:.78rem;z-index:999}
 .model-banner{background:linear-gradient(90deg,#173c67,#237ef5);color:#fff;border-radius:11px;padding:.78rem 1rem;margin:.25rem 0 1rem;font-weight:750;font-size:1.04rem}
+.auth-title{text-align:center;color:#173c67;font-size:2rem;font-weight:760;margin:.35rem 0 .3rem}.auth-subtitle{text-align:center;color:#63778f;margin-bottom:1.5rem}
 [data-testid="stSidebar"] [role="radiogroup"]{gap:.3rem}
 [data-testid="stSidebar"] [role="radiogroup"] label{background:transparent;border-radius:9px;padding:.58rem .65rem;color:#32465d;width:100%}
 [data-testid="stSidebar"] [role="radiogroup"] label:hover{background:#f0f5fb;color:#1768e5}
@@ -72,41 +73,44 @@ def authentication_gate():
                 st.session_state.pop("auth_email", None)
                 st.rerun()
         return
-    st.image(str(LOGO_FILE), width=260)
-    heading_text = '<div class="page-title">用户登录</div><div class="page-subtitle">注册账号并登录后方可使用材料预测平台。</div>'
-    st.markdown(heading_text, unsafe_allow_html=True)
-    login_tab, register_tab = st.tabs(["登录", "注册"])
-    headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
-    with login_tab:
-        email = st.text_input("邮箱", key="login_email")
-        password = st.text_input("密码", type="password", key="login_password")
-        if st.button("登录", type="primary", use_container_width=True):
-            response = requests.post(f"{url}/auth/v1/token?grant_type=password", headers=headers,
-                                     json={"email": email.strip(), "password": password}, timeout=15)
-            if response.ok:
-                payload = response.json()
-                st.session_state.auth_access_token = payload.get("access_token")
-                st.session_state.auth_email = payload.get("user", {}).get("email", email.strip())
-                st.rerun()
-            else:
-                st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
-    with register_tab:
-        new_email = st.text_input("注册邮箱", key="register_email")
-        new_password = st.text_input("设置密码（至少6位）", type="password", key="register_password")
-        confirm_password = st.text_input("确认密码", type="password", key="register_password_confirm")
-        if st.button("创建账号", use_container_width=True):
-            if len(new_password) < 6:
-                st.error("密码至少需要6位。")
-            elif new_password != confirm_password:
-                st.error("两次输入的密码不一致。")
-            else:
-                response = requests.post(f"{url}/auth/v1/signup", headers=headers,
-                                         json={"email": new_email.strip(), "password": new_password}, timeout=15)
+    _, auth_col, _ = st.columns([1, 1.15, 1])
+    with auth_col:
+        logo_left, logo_col, logo_right = st.columns([.2, .6, .2])
+        with logo_col:
+            st.image(str(LOGO_FILE), use_container_width=True)
+        st.markdown('<div class="auth-title">用户登录</div><div class="auth-subtitle">注册账号并登录后方可使用材料预测平台</div>', unsafe_allow_html=True)
+        login_tab, register_tab = st.tabs(["登录", "注册"])
+        headers = {"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+        with login_tab:
+            email = st.text_input("邮箱", key="login_email")
+            password = st.text_input("密码", type="password", key="login_password")
+            if st.button("登录", type="primary", use_container_width=True):
+                response = requests.post(f"{url}/auth/v1/token?grant_type=password", headers=headers,
+                                         json={"email": email.strip(), "password": password}, timeout=15)
                 if response.ok:
-                    st.success("注册成功。若已开启邮箱验证，请先查收验证邮件，然后返回登录。")
+                    payload = response.json()
+                    st.session_state.auth_access_token = payload.get("access_token")
+                    st.session_state.auth_email = payload.get("user", {}).get("email", email.strip())
+                    st.rerun()
                 else:
-                    message = response.json().get("msg", "注册失败") if response.headers.get("content-type", "").startswith("application/json") else "注册失败"
-                    st.error(message)
+                    st.error("登录失败，请检查邮箱、密码或邮箱验证状态。")
+        with register_tab:
+            new_email = st.text_input("注册邮箱", key="register_email")
+            new_password = st.text_input("设置密码（至少6位）", type="password", key="register_password")
+            confirm_password = st.text_input("确认密码", type="password", key="register_password_confirm")
+            if st.button("创建账号", use_container_width=True):
+                if len(new_password) < 6:
+                    st.error("密码至少需要6位。")
+                elif new_password != confirm_password:
+                    st.error("两次输入的密码不一致。")
+                else:
+                    response = requests.post(f"{url}/auth/v1/signup", headers=headers,
+                                             json={"email": new_email.strip(), "password": new_password}, timeout=15)
+                    if response.ok:
+                        st.success("注册成功。若已开启邮箱验证，请先查收验证邮件，然后返回登录。")
+                    else:
+                        message = response.json().get("msg", "注册失败") if response.headers.get("content-type", "").startswith("application/json") else "注册失败"
+                        st.error(message)
     st.stop()
 
 
