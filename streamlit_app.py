@@ -38,7 +38,7 @@ from prediction_core import ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "sanhuan-logo.png"
-APP_VERSION = "v0.9.4"
+APP_VERSION = "v0.9.5"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -906,10 +906,23 @@ def render_batch_pca_analysis():
         title="批量输入材料在PCA空间中的位置",
     )
     figure.update_traces(selector={"name": "训练数据"}, marker={"size": 6, "opacity": .42})
+    figure.update_traces(
+        selector={"name": "训练数据"},
+        hovertemplate="类型=训练数据<br>PC1=%{x:.5f}<br>PC2=%{y:.5f}<extra></extra>",
+    )
     for name in ["输入材料：域内", "输入材料：域外"]:
+        target_subset = plotted_targets[plotted_targets["类型"] == name]
         figure.update_traces(selector={"name": name}, marker={"size": 12, "opacity": .95,
                                                               "symbol": "triangle-up" if name.endswith("域内") else "x",
-                                                              "line": {"width": 1.5, "color": "white"}})
+                                                              "line": {"width": 1.5, "color": "white"},
+                                                              "sizeref": 1})
+        figure.update_traces(
+            selector={"name": name},
+            hovertemplate=("类型=%{fullData.name}<br>化学式=%{customdata[0]}<br>"
+                           "电解质=%{customdata[1]}<br>PC1=%{x:.5f}<br>PC2=%{y:.5f}<br>"
+                           "PCA可靠性得分（%%）=%{customdata[2]:.5f}<extra></extra>"),
+            customdata=target_subset[["Composition", "electrolyte", "PCA可靠性得分（%）"]].values,
+        )
     variance = payload.get("explained_variance_ratio", [])
     if len(variance) >= 2:
         figure.update_xaxes(title=f"PC1（解释方差 {variance[0] * 100:.2f}%）")
