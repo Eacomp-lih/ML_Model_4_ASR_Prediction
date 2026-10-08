@@ -34,7 +34,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.8.3"
+APP_VERSION = "v0.8.4"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -103,6 +103,24 @@ def get_auth_config():
     url = str(auth.get("supabase_url", "")).strip().strip('"\'').rstrip("/")
     key = str(auth.get("supabase_anon_key", "")).strip().strip('"\'')
     return auth, url, key
+
+
+def service_request(method, url, *, attempts=3, timeout=(5, 15), **kwargs):
+    """Retry temporary network/cold-start failures without retrying user input errors."""
+    last_exception = None
+    response = None
+    for attempt in range(attempts):
+        try:
+            response = requests.request(method, url, timeout=timeout, **kwargs)
+            if response.status_code != 429 and response.status_code < 500:
+                return response
+        except requests.RequestException as exc:
+            last_exception = exc
+        if attempt < attempts - 1:
+            time.sleep(1.5 * (2 ** attempt))
+    if response is not None:
+        return response
+    raise last_exception or requests.ConnectionError("账号服务连接失败")
 
 
 COOKIE_MANAGER = stx.CookieManager(key="asr_auth_cookies")
@@ -192,17 +210,21 @@ def authentication_gate():
         refresh_token = get_cookie_manager().get("asr_refresh_token")
         if refresh_token:
             try:
-                refresh_response = requests.post(
+                refresh_response = service_request("POST",
                     f"{url}/auth/v1/token?grant_type=refresh_token",
                     headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                    json={"refresh_token": refresh_token}, timeout=15)
+                    json={"refresh_token": refresh_token})
                 if refresh_response.ok:
                     remember_login(refresh_response.json())
                     st.rerun()
-                else:
+                elif refresh_response.status_code in {400, 401, 403}:
                     clear_login()
+                else:
+                    st.error("账号服务正在恢复或暂时繁忙，已保留登录凭据。请稍候刷新页面重试。")
+                    st.stop()
             except requests.RequestException:
-                pass
+                st.error("账号服务可能正在从休眠状态启动，已保留登录凭据。请等待约30秒后刷新页面，无需重新登录。")
+                st.stop()
         elif st.session_state.get("cookie_load_attempts", 0) < 3:
             st.session_state.cookie_load_attempts = st.session_state.get("cookie_load_attempts", 0) + 1
             time.sleep(.35)
@@ -229,14 +251,16 @@ def authentication_gate():
                 st.error(f"登录失败次数过多，请在约 {remaining} 分钟后重试。")
             if st.button("登录", type="primary", use_container_width=True, disabled=locked):
                 try:
-                    response = requests.post(f"{url}/auth/v1/token?grant_type=password", headers=headers,
-                                             json={"email": email.strip(), "password": password}, timeout=15)
+                    response = service_request("POST", f"{url}/auth/v1/token?grant_type=password", headers=headers,
+                                               json={"email": email.strip(), "password": password})
                     if response.ok:
                         st.session_state.login_failed_attempts = 0
                         st.session_state.pop("login_locked_until", None)
                         payload = response.json()
                         remember_login(payload)
                         st.rerun()
+                    elif response.status_code == 429 or response.status_code >= 500:
+                        st.error("账号服务正在启动或暂时繁忙，请等待约30秒后再次点击登录。此次不会计入登录失败次数。")
                     else:
                         attempts = st.session_state.get("login_failed_attempts", 0) + 1
                         st.session_state.login_failed_attempts = attempts
@@ -246,13 +270,13 @@ def authentication_gate():
                         else:
                             st.error(f"登录失败，请检查邮箱、密码或邮箱验证状态。还可尝试 {5 - attempts} 次。")
                 except requests.RequestException:
-                    st.error("暂时无法连接账号服务。请检查网络连接，稍后重试；若持续失败，请通过问题反馈联系管理员。")
+                    st.error("账号服务可能正在从休眠状态启动。请等待约30秒后重试；此次不会计入登录失败次数。")
             with st.expander("忘记密码"):
                 reset_email = st.text_input("注册邮箱", key="reset_email")
                 if st.button("发送密码重置邮件", disabled=not reset_email.strip(), use_container_width=True):
                     try:
-                        response = requests.post(f"{url}/auth/v1/recover", headers=headers,
-                                                 json={"email": reset_email.strip()}, timeout=15)
+                        response = service_request("POST", f"{url}/auth/v1/recover", headers=headers,
+                                                   json={"email": reset_email.strip()})
                         if response.ok:
                             st.success("若该邮箱已注册，密码重置邮件将很快发出。请检查收件箱和垃圾邮件。")
                         else:
@@ -272,8 +296,8 @@ def authentication_gate():
                     st.error("两次输入的密码不一致。")
                 else:
                     try:
-                        response = requests.post(f"{url}/auth/v1/signup", headers=headers,
-                                                 json={"email": new_email.strip(), "password": new_password}, timeout=15)
+                        response = service_request("POST", f"{url}/auth/v1/signup", headers=headers,
+                                                   json={"email": new_email.strip(), "password": new_password})
                         if response.ok:
                             payload = response.json()
                             if payload.get("access_token"):
@@ -988,8 +1012,8 @@ def settings_page():
             if st.button("保存用户名", type="primary"):
                 headers = {"apikey": key, "Authorization": f"Bearer {token}", "Content-Type": "application/json"}
                 try:
-                    response = requests.put(f"{url}/auth/v1/user", headers=headers,
-                                            json={"data": {"username": username.strip()}}, timeout=15)
+                    response = service_request("PUT", f"{url}/auth/v1/user", headers=headers,
+                                               json={"data": {"username": username.strip()}})
                     if response.ok:
                         st.session_state.auth_username = username.strip()
                         st.success("用户名已更新。")
@@ -1014,12 +1038,12 @@ def settings_page():
                     st.error("新密码不能与当前密码相同。")
                 else:
                     try:
-                        verify_response = requests.post(
+                        verify_response = service_request("POST",
                             f"{url}/auth/v1/token?grant_type=password",
                             headers={"apikey": key, "Authorization": f"Bearer {key}",
                                      "Content-Type": "application/json"},
                             json={"email": st.session_state.get("auth_email", ""),
-                                  "password": current_password}, timeout=15)
+                                  "password": current_password})
                         if not verify_response.ok:
                             st.error("当前密码不正确，无法更新密码。")
                             st.stop()
@@ -1027,8 +1051,8 @@ def settings_page():
                         verified_token = verified_payload.get("access_token", "")
                         headers = {"apikey": key, "Authorization": f"Bearer {verified_token}",
                                    "Content-Type": "application/json"}
-                        response = requests.put(f"{url}/auth/v1/user", headers=headers,
-                                                json={"password": new_password}, timeout=15)
+                        response = service_request("PUT", f"{url}/auth/v1/user", headers=headers,
+                                                   json={"password": new_password})
                         if response.ok:
                             remember_login(verified_payload)
                             st.success("密码已更新。下次登录请使用新密码。")
@@ -1040,7 +1064,7 @@ def settings_page():
             if st.button("退出当前账号", use_container_width=True):
                 headers = {"apikey": key, "Authorization": f"Bearer {token}"}
                 try:
-                    requests.post(f"{url}/auth/v1/logout", headers=headers, timeout=10)
+                    service_request("POST", f"{url}/auth/v1/logout", headers=headers, attempts=2)
                 except requests.RequestException:
                     pass
                 clear_login()
@@ -1052,17 +1076,17 @@ def settings_page():
                 if st.button("永久注销账号", disabled=delete_confirmation != "永久注销" or not delete_password,
                              use_container_width=True):
                     try:
-                        verify_response = requests.post(
+                        verify_response = service_request("POST",
                             f"{url}/auth/v1/token?grant_type=password",
                             headers={"apikey": key, "Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                            json={"email": st.session_state.get("auth_email", ""), "password": delete_password}, timeout=15)
+                            json={"email": st.session_state.get("auth_email", ""), "password": delete_password})
                         if not verify_response.ok:
                             st.error("当前密码不正确，账号未注销。")
                             st.stop()
                         headers = {"apikey": key, "Authorization": f'Bearer {verify_response.json().get("access_token", token)}',
                                    "Content-Type": "application/json"}
-                        response = requests.post(f"{url}/rest/v1/rpc/delete_own_account", headers=headers,
-                                                 json={}, timeout=15)
+                        response = service_request("POST", f"{url}/rest/v1/rpc/delete_own_account", headers=headers,
+                                                   json={})
                         if response.ok:
                             clear_login()
                             st.session_state.account_deleted = True
@@ -1124,7 +1148,7 @@ def settings_page():
         st.dataframe(status_frame, use_container_width=True, hide_index=True)
         if st.button("检查云端账号服务", use_container_width=True):
             try:
-                response = requests.get(f"{url}/auth/v1/health", headers={"apikey": key}, timeout=10)
+                response = service_request("GET", f"{url}/auth/v1/health", headers={"apikey": key}, attempts=2)
                 if response.ok:
                     st.success("云端账号服务连接正常。")
                 else:
@@ -1144,7 +1168,7 @@ def settings_page():
                            "username": st.session_state.get("auth_username", ""),
                            "category": category, "message": message.strip(), "app_version": APP_VERSION}
                 try:
-                    response = requests.post(f"{url}/rest/v1/feedback", headers=headers, json=payload, timeout=15)
+                    response = service_request("POST", f"{url}/rest/v1/feedback", headers=headers, json=payload)
                     if response.ok:
                         st.success("反馈已提交，感谢你的建议。")
                     else:
