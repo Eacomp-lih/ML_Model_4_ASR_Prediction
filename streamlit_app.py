@@ -34,7 +34,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.8.4"
+APP_VERSION = "v0.8.5"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -759,6 +759,11 @@ def batch_prediction_section():
             success_count = int((result_frame["错误"] == "").sum())
             failed_count = len(result_frame) - success_count
             st.session_state.batch_prediction_result = result_frame
+            st.session_state.batch_prediction_csv = result_frame.to_csv(index=False).encode("utf-8-sig")
+            batch_excel = io.BytesIO()
+            with pd.ExcelWriter(batch_excel, engine="openpyxl") as writer:
+                result_frame.to_excel(writer, index=False, sheet_name="批量预测结果")
+            st.session_state.batch_prediction_excel = batch_excel.getvalue()
             add_operation("ASR预测", f"批量预测 / {model} / 成功{success_count}条 / 失败{failed_count}条",
                           "成功" if failed_count == 0 else "部分成功")
             if failed_count:
@@ -775,14 +780,22 @@ def batch_prediction_section():
     result_frame = st.session_state.get("batch_prediction_result")
     if isinstance(result_frame, pd.DataFrame) and not result_frame.empty:
         st.dataframe(result_frame.round(5), use_container_width=True, hide_index=True)
-        excel_buffer = io.BytesIO()
-        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-            result_frame.to_excel(writer, index=False, sheet_name="批量预测结果")
+        csv_bytes = st.session_state.get("batch_prediction_csv")
+        excel_bytes = st.session_state.get("batch_prediction_excel")
+        if not csv_bytes or not excel_bytes:
+            csv_bytes = result_frame.to_csv(index=False).encode("utf-8-sig")
+            excel_buffer = io.BytesIO()
+            with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                result_frame.to_excel(writer, index=False, sheet_name="批量预测结果")
+            excel_bytes = excel_buffer.getvalue()
+            st.session_state.batch_prediction_csv = csv_bytes
+            st.session_state.batch_prediction_excel = excel_bytes
         c1, c2 = st.columns(2)
-        c1.download_button("下载批量结果 CSV", result_frame.to_csv(index=False).encode("utf-8-sig"),
-                           "batch_asr_predictions.csv", "text/csv", use_container_width=True)
-        c2.download_button("下载批量结果 Excel", excel_buffer.getvalue(), "batch_asr_predictions.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+        c1.download_button("下载批量结果 CSV", csv_bytes, "batch_asr_predictions.csv", "text/csv",
+                           key="download_batch_csv", on_click="ignore", use_container_width=True)
+        c2.download_button("下载批量结果 Excel", excel_bytes, "batch_asr_predictions.xlsx",
+                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                           key="download_batch_excel", on_click="ignore", use_container_width=True)
         st.caption("免责声明：批量预测结果仅供科研筛选参考，失败行不会生成预测值，所有结果均应结合实验验证。")
 
 
