@@ -34,8 +34,8 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
-LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.9.0"
+LOGO_FILE = ROOT / "assets" / "sanhuan-logo.png"
+APP_VERSION = "v0.9.1"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
