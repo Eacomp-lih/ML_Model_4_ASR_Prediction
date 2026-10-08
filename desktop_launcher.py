@@ -6,8 +6,6 @@ import os
 import socket
 import subprocess
 import sys
-import tempfile
-import traceback
 import time
 import urllib.error
 import urllib.request
@@ -26,13 +24,16 @@ def _free_port() -> int:
 
 
 def _wait_for_server(port: int, process: subprocess.Popen) -> bool:
-    health_url = f"http://127.0.0.1:{port}/_stcore/health"
+    base_url = f"http://127.0.0.1:{port}"
     for _ in range(120):
         if process.poll() is not None:
             return False
         try:
-            with urllib.request.urlopen(health_url, timeout=0.5) as response:
-                if response.status == 200:
+            with urllib.request.urlopen(f"{base_url}/_stcore/health", timeout=0.5) as health:
+                if health.status != 200:
+                    continue
+            with urllib.request.urlopen(f"{base_url}/", timeout=0.5) as page:
+                if page.status == 200 and b"<html" in page.read(1024).lower():
                     return True
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             pass
@@ -48,8 +49,10 @@ def _serve(port: int) -> None:
         import streamlit.config as st_config
         from streamlit.web import bootstrap
 
-        # Streamlit 1.65 reads the global config before bootstrap.run receives
-        # flag_options, so set the loopback port explicitly first.
+        # In a PyInstaller bundle, streamlit/config.py is outside site-packages.
+        # Streamlit otherwise mistakes the bundle for a development checkout
+        # and does not mount its production frontend, making '/' return 404.
+        st_config.set_option("global.developmentMode", False)
         st_config.set_option("server.address", "127.0.0.1")
         st_config.set_option("server.port", port)
         st_config.set_option("server.headless", True)
@@ -63,10 +66,8 @@ def _serve(port: int) -> None:
                 "browser.gatherUsageStats": False,
             },
         )
-    except BaseException:
-        Path(tempfile.gettempdir(), "asr_prediction_offline_startup.log").write_text(
-            traceback.format_exc(), encoding="utf-8"
-        )
+    except Exception as exc:
+        _show_error(f"本地服务启动失败：{exc}")
         raise
 
 
