@@ -6,6 +6,8 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
+import traceback
 import time
 import urllib.error
 import urllib.request
@@ -39,21 +41,31 @@ def _wait_for_server(port: int, process: subprocess.Popen) -> bool:
 
 
 def _serve(port: int) -> None:
-    os.environ["ASR_DESKTOP_MODE"] = "1"
-    os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
-    os.chdir(APP_ROOT)
-    from streamlit.web import bootstrap
+    try:
+        os.environ["ASR_DESKTOP_MODE"] = "1"
+        os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+        os.chdir(APP_ROOT)
+        import streamlit.config as st_config
+        from streamlit.web import bootstrap
 
-    bootstrap.run(
-        str(APP_FILE), False, [],
-        flag_options={
-            "server.address": "127.0.0.1",
-            "server.port": port,
-            "server.headless": True,
-            "server.fileWatcherType": "none",
-            "browser.gatherUsageStats": False,
-        },
-    )
+        # Streamlit 1.65 reads the global config before bootstrap.run receives
+        # flag_options, so set the loopback port explicitly first.
+        st_config.set_option("server.address", "127.0.0.1")
+        st_config.set_option("server.port", port)
+        st_config.set_option("server.headless", True)
+        bootstrap.run(
+            str(APP_FILE), False, [],
+            flag_options={
+                "server.address": "127.0.0.1", "server.port": port,
+                "server.headless": True, "server.fileWatcherType": "none",
+                "browser.gatherUsageStats": False,
+            },
+        )
+    except BaseException:
+        Path(tempfile.gettempdir(), "asr_prediction_offline_startup.log").write_text(
+            traceback.format_exc(), encoding="utf-8"
+        )
+        raise
 
 
 def _show_error(message: str) -> None:
