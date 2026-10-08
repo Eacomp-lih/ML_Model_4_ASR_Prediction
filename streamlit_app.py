@@ -11,6 +11,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import plotly.io as pio
 import requests
 import streamlit as st
@@ -35,7 +36,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "sanhuan-logo.png"
-APP_VERSION = "v0.9.1"
+APP_VERSION = "v0.9.2"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -338,6 +339,25 @@ def t(chinese, english):
 
 def heading(title, subtitle):
     st.markdown(f'<div class="page-title">{title}</div><div class="page-subtitle">{subtitle}</div>', unsafe_allow_html=True)
+
+
+def add_pca_applicability_domain(figure, target_scores):
+    """Overlay the notebook's kNN/conformal 85% PCA applicability domain."""
+    grid = get_predictor().pca_domain_grid(target_scores)
+    boundary = go.Contour(
+        x=grid["x"], y=grid["y"], z=grid["p"],
+        contours={"type": "constraint", "operation": ">", "value": grid["alpha"]},
+        line={"color": "#238b45", "width": 2.2},
+        fillcolor="rgba(163, 215, 168, 0.30)",
+        name="85%适用域", showlegend=True, showscale=False, hoverinfo="skip",
+    )
+    figure.add_trace(boundary)
+    figure.data = (figure.data[-1],) + figure.data[:-1]
+    figure.update_layout(
+        title={"text": figure.layout.title.text + "（85%适用域）"},
+        legend_title_text="样本与适用域",
+    )
+    return grid
 
 
 def add_operation(category, summary, status="成功"):
@@ -669,14 +689,20 @@ def prediction_page():
             if len(pca_frame) > 1500:
                 pca_frame = pca_frame.sample(1500, random_state=42)
             pca_frame["类型"] = "训练数据"
-            target_frame = pd.DataFrame([[*details["target_scores"], "输入材料"]], columns=["PC1", "PC2", "类型"])
+            target_type = "输入材料：域内" if r["pca_domain"] == "inside" else "输入材料：域外"
+            target_frame = pd.DataFrame([[*details["target_scores"], target_type]], columns=["PC1", "PC2", "类型"])
             pca_plot = pd.concat([pca_frame, target_frame], ignore_index=True)
             fig = px.scatter(pca_plot, x="PC1", y="PC2", color="类型", symbol="类型",
-                             color_discrete_map={"训练数据":"#94a3b8", "输入材料":"#ef4444"},
+                             color_discrete_map={"训练数据":"#94a3b8", "输入材料：域内":"#ff8c33",
+                                                 "输入材料：域外":"#c51b7d"},
                              title="输入材料在PCA空间中的位置")
             fig.update_traces(marker={"size": 7, "opacity": .65})
-            fig.update_traces(selector={"name":"输入材料"}, marker={"size": 16, "opacity": 1, "line":{"width":2,"color":"white"}})
+            fig.update_traces(selector={"name": target_type}, marker={"size": 16, "opacity": 1,
+                                                                     "symbol": "triangle-up" if r["pca_domain"] == "inside" else "x",
+                                                                     "line":{"width":2,"color":"white"}})
+            add_pca_applicability_domain(fig, [details["target_scores"]])
             st.plotly_chart(fig, use_container_width=True, config={"displaylogo": False})
+            st.caption("绿色区域为基于第5近邻距离和校准集绘制的85% PCA适用域；输入材料落在区域内/外与上方判断一致。二维投影仅反映前两个主成分。")
             nearest = pd.DataFrame(details["nearest_materials"]).rename(columns={
                 "electrolyte":"电解质", "Log_ASR":"Log_ASR", "distance":"PCA标准化距离"
             })
@@ -844,7 +870,7 @@ def render_batch_pca_analysis():
     training["electrolyte"] = ""
     training["PCA可靠性得分（%）"] = np.nan
     plotted_targets = targets.copy()
-    plotted_targets["类型"] = "输入-" + plotted_targets["可靠性等级"].astype(str) + "可靠性"
+    plotted_targets["类型"] = np.where(plotted_targets["适用域"] == "inside", "输入材料：域内", "输入材料：域外")
     plot_frame = pd.concat([
         training[["PC1", "PC2", "类型", "Composition", "electrolyte", "PCA可靠性得分（%）"]],
         plotted_targets[["PC1", "PC2", "类型", "Composition", "electrolyte", "PCA可靠性得分（%）"]],
@@ -852,20 +878,23 @@ def render_batch_pca_analysis():
     figure = px.scatter(
         plot_frame, x="PC1", y="PC2", color="类型", symbol="类型", hover_name="Composition",
         hover_data={"electrolyte": True, "PCA可靠性得分（%）": ":.5f"},
-        color_discrete_map={"训练数据": "#94a3b8", "输入-高可靠性": "#009E73",
-                            "输入-中可靠性": "#E69F00", "输入-低可靠性": "#D55E00"},
+        color_discrete_map={"训练数据": "#94a3b8", "输入材料：域内": "#ff8c33",
+                            "输入材料：域外": "#c51b7d"},
         title="批量输入材料在PCA空间中的位置",
     )
     figure.update_traces(selector={"name": "训练数据"}, marker={"size": 6, "opacity": .42})
-    for name in ["输入-高可靠性", "输入-中可靠性", "输入-低可靠性"]:
+    for name in ["输入材料：域内", "输入材料：域外"]:
         figure.update_traces(selector={"name": name}, marker={"size": 12, "opacity": .95,
+                                                              "symbol": "triangle-up" if name.endswith("域内") else "x",
                                                               "line": {"width": 1.5, "color": "white"}})
     variance = payload.get("explained_variance_ratio", [])
     if len(variance) >= 2:
         figure.update_xaxes(title=f"PC1（解释方差 {variance[0] * 100:.2f}%）")
         figure.update_yaxes(title=f"PC2（解释方差 {variance[1] * 100:.2f}%）")
+    add_pca_applicability_domain(figure, targets[["PC1", "PC2"]].values.tolist())
     figure.update_layout(height=520, margin=dict(l=10, r=10, t=55, b=10), legend_title_text="样本类型")
     st.plotly_chart(figure, use_container_width=True, config={"displaylogo": False})
+    st.caption("绿色区域为基于第5近邻距离和校准集绘制的85% PCA适用域；橙色表示域内，紫色表示域外。")
 
     nearest = st.session_state.get("batch_nearest_materials")
     if isinstance(nearest, pd.DataFrame) and not nearest.empty:

@@ -34,6 +34,9 @@ MODEL_NAMES = ("ann", "rf", "svr")
 class _PCAApplicability:
     """Reproduce the PCA/kNN applicability calculation from the PCA notebook."""
 
+    ALPHA = 0.15
+    K = 5
+
     def __init__(self, training_file: Path, feature_columns: list[str]) -> None:
         train = pd.read_excel(training_file, sheet_name="features")
         # PCA uses the trained numeric schema, including electrolyte one-hot columns.
@@ -60,7 +63,7 @@ class _PCAApplicability:
         self.pc_scaler = StandardScaler().fit(train_scores[reference_idx])
         reference_pc_z = self.pc_scaler.transform(train_scores[reference_idx])
         calibration_pc_z = self.pc_scaler.transform(train_scores[calibration_idx])
-        self.knn = NearestNeighbors(n_neighbors=min(5, len(reference_idx))).fit(reference_pc_z)
+        self.knn = NearestNeighbors(n_neighbors=min(self.K, len(reference_idx))).fit(reference_pc_z)
         self.calibration_distance = self.knn.kneighbors(calibration_pc_z)[0][:, -1]
         self.all_neighbors = NearestNeighbors(n_neighbors=min(3, len(train_scores))).fit(
             self.pc_scaler.transform(train_scores)
@@ -72,7 +75,31 @@ class _PCAApplicability:
         target_pc_z = self.pc_scaler.transform(target_scores)
         distance = float(self.knn.kneighbors(target_pc_z)[0][0, -1])
         p_value = float((1 + (self.calibration_distance >= distance).sum()) / (len(self.calibration_distance) + 1))
-        return 100.0 * p_value, ("inside" if p_value > 0.2 else "outside"), distance
+        return 100.0 * p_value, ("inside" if p_value > self.ALPHA else "outside"), distance
+
+    def domain_grid(self, target_scores: list[list[float]] | np.ndarray | None = None) -> dict[str, Any]:
+        """Return the notebook's conformal p-value grid for the 2D PCA AD plot."""
+        points = self.training_scores
+        if target_scores is not None:
+            targets = np.asarray(target_scores, dtype=float).reshape(-1, 2)
+            if len(targets):
+                points = np.vstack([points, targets])
+        x_min, x_max = float(points[:, 0].min()), float(points[:, 0].max())
+        y_min, y_max = float(points[:, 1].min()), float(points[:, 1].max())
+        x_pad = 0.06 * max(x_max - x_min, 1e-9)
+        y_pad = 0.06 * max(y_max - y_min, 1e-9)
+        x = np.linspace(x_min - x_pad, x_max + x_pad, 260)
+        y = np.linspace(y_min - y_pad, y_max + y_pad, 220)
+        gx, gy = np.meshgrid(x, y)
+        grid_scores = np.column_stack([gx.ravel(), gy.ravel()])
+        grid_distance = self.knn.kneighbors(self.pc_scaler.transform(grid_scores))[0][:, -1]
+        grid_p = (
+            1 + (self.calibration_distance[None, :] >= grid_distance[:, None]).sum(axis=1)
+        ) / (len(self.calibration_distance) + 1)
+        return {
+            "x": x.tolist(), "y": y.tolist(), "p": grid_p.reshape(gx.shape).tolist(),
+            "alpha": self.ALPHA, "coverage": 1.0 - self.ALPHA, "k": self.K,
+        }
 
     def details(self, frame: pd.DataFrame) -> dict[str, Any]:
         x = frame.reindex(columns=self.feature_columns)
@@ -140,6 +167,9 @@ class ASRPredictor:
             model_features = list(getattr(self.models[name], "feature_names_in_", []))
             if model_features and model_features != self.feature_columns:
                 raise ValueError(f"{name} 模型特征顺序与 run_metadata.json 不一致")
+
+    def pca_domain_grid(self, target_scores=None) -> dict[str, Any]:
+        return self.pca_applicability.domain_grid(target_scores)
 
     @staticmethod
     def _structure_type(formula: str, split_ab) -> str:
