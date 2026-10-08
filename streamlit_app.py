@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import base64
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -34,7 +35,7 @@ from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "eacomp-logo.png"
-APP_VERSION = "v0.8.5"
+APP_VERSION = "v0.9.0"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -738,18 +739,40 @@ def batch_prediction_section():
             if invalid:
                 raise ValueError(f"存在不支持的电解质：{invalid}")
             output = []
+            pca_targets = []
+            nearest_rows = []
+            training_scores = None
+            explained_variance = None
             progress = st.progress(0, text="正在进行批量预测…")
             predictor = get_predictor()
             for index, row in enumerate(rows.itertuples(index=False), start=1):
                 try:
                     result = predictor.predict(row.Composition, row.electrolyte, model.lower(),
-                                               verbose=False, include_details=False)
+                                               verbose=False, include_details=True, include_impacts=False)
                     output.append({
                         "Composition": row.Composition, "electrolyte": row.electrolyte, "模型": model,
                         "Log_ASR": result["Log_ASR"], "ASR（Ω·cm²）": result["ASR"],
                         "PCA可靠性得分（%）": result["reliability_score"],
                         "可靠性等级": result["reliability_level"], "适用域": result["pca_domain"], "错误": "",
                     })
+                    details = result["pca_details"]
+                    if training_scores is None:
+                        training_scores = details["training_scores"]
+                        explained_variance = details["explained_variance_ratio"]
+                    pca_targets.append({
+                        "输入序号": index, "Composition": row.Composition, "electrolyte": row.electrolyte,
+                        "PC1": details["target_scores"][0], "PC2": details["target_scores"][1],
+                        "PCA可靠性得分（%）": result["reliability_score"],
+                        "可靠性等级": result["reliability_level"], "适用域": result["pca_domain"],
+                    })
+                    for rank, neighbor in enumerate(details["nearest_materials"], start=1):
+                        nearest_rows.append({
+                            "输入序号": index, "输入材料": row.Composition, "输入电解质": row.electrolyte,
+                            "排名": rank, "最近训练材料": neighbor["Composition"],
+                            "训练材料电解质": neighbor["electrolyte"],
+                            "训练材料Log_ASR": neighbor["Log_ASR"],
+                            "PCA标准化距离": neighbor["distance"],
+                        })
                 except Exception as exc:
                     output.append({"Composition": row.Composition, "electrolyte": row.electrolyte,
                                    "模型": model, "错误": str(exc)})
@@ -759,10 +782,18 @@ def batch_prediction_section():
             success_count = int((result_frame["错误"] == "").sum())
             failed_count = len(result_frame) - success_count
             st.session_state.batch_prediction_result = result_frame
+            nearest_frame = pd.DataFrame(nearest_rows)
+            st.session_state.batch_nearest_materials = nearest_frame
+            st.session_state.batch_pca_payload = {
+                "training_scores": training_scores or [], "targets": pca_targets,
+                "explained_variance_ratio": explained_variance or [],
+            }
             st.session_state.batch_prediction_csv = result_frame.to_csv(index=False).encode("utf-8-sig")
             batch_excel = io.BytesIO()
             with pd.ExcelWriter(batch_excel, engine="openpyxl") as writer:
                 result_frame.to_excel(writer, index=False, sheet_name="批量预测结果")
+                if not nearest_frame.empty:
+                    nearest_frame.to_excel(writer, index=False, sheet_name="最近训练材料")
             st.session_state.batch_prediction_excel = batch_excel.getvalue()
             add_operation("ASR预测", f"批量预测 / {model} / 成功{success_count}条 / 失败{failed_count}条",
                           "成功" if failed_count == 0 else "部分成功")
@@ -780,6 +811,7 @@ def batch_prediction_section():
     result_frame = st.session_state.get("batch_prediction_result")
     if isinstance(result_frame, pd.DataFrame) and not result_frame.empty:
         st.dataframe(result_frame.round(5), use_container_width=True, hide_index=True)
+        render_batch_pca_analysis()
         csv_bytes = st.session_state.get("batch_prediction_csv")
         excel_bytes = st.session_state.get("batch_prediction_excel")
         if not csv_bytes or not excel_bytes:
@@ -787,16 +819,88 @@ def batch_prediction_section():
             excel_buffer = io.BytesIO()
             with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
                 result_frame.to_excel(writer, index=False, sheet_name="批量预测结果")
+                nearest_frame = st.session_state.get("batch_nearest_materials")
+                if isinstance(nearest_frame, pd.DataFrame) and not nearest_frame.empty:
+                    nearest_frame.to_excel(writer, index=False, sheet_name="最近训练材料")
             excel_bytes = excel_buffer.getvalue()
             st.session_state.batch_prediction_csv = csv_bytes
             st.session_state.batch_prediction_excel = excel_bytes
-        c1, c2 = st.columns(2)
-        c1.download_button("下载批量结果 CSV", csv_bytes, "batch_asr_predictions.csv", "text/csv",
-                           key="download_batch_csv", on_click="ignore", use_container_width=True)
-        c2.download_button("下载批量结果 Excel", excel_bytes, "batch_asr_predictions.xlsx",
-                           "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                           key="download_batch_excel", on_click="ignore", use_container_width=True)
+        render_batch_downloads(csv_bytes, excel_bytes)
         st.caption("免责声明：批量预测结果仅供科研筛选参考，失败行不会生成预测值，所有结果均应结合实验验证。")
+
+
+def render_batch_pca_analysis():
+    payload = st.session_state.get("batch_pca_payload", {})
+    targets = pd.DataFrame(payload.get("targets", []))
+    training_scores = payload.get("training_scores", [])
+    if targets.empty or not training_scores:
+        return
+    st.markdown("### 批量PCA适用域分析")
+    training = pd.DataFrame(training_scores, columns=["PC1", "PC2"])
+    if len(training) > 1500:
+        training = training.sample(1500, random_state=42)
+    training["类型"] = "训练数据"
+    training["Composition"] = ""
+    training["electrolyte"] = ""
+    training["PCA可靠性得分（%）"] = np.nan
+    plotted_targets = targets.copy()
+    plotted_targets["类型"] = "输入-" + plotted_targets["可靠性等级"].astype(str) + "可靠性"
+    plot_frame = pd.concat([
+        training[["PC1", "PC2", "类型", "Composition", "electrolyte", "PCA可靠性得分（%）"]],
+        plotted_targets[["PC1", "PC2", "类型", "Composition", "electrolyte", "PCA可靠性得分（%）"]],
+    ], ignore_index=True)
+    figure = px.scatter(
+        plot_frame, x="PC1", y="PC2", color="类型", symbol="类型", hover_name="Composition",
+        hover_data={"electrolyte": True, "PCA可靠性得分（%）": ":.5f"},
+        color_discrete_map={"训练数据": "#94a3b8", "输入-高可靠性": "#009E73",
+                            "输入-中可靠性": "#E69F00", "输入-低可靠性": "#D55E00"},
+        title="批量输入材料在PCA空间中的位置",
+    )
+    figure.update_traces(selector={"name": "训练数据"}, marker={"size": 6, "opacity": .42})
+    for name in ["输入-高可靠性", "输入-中可靠性", "输入-低可靠性"]:
+        figure.update_traces(selector={"name": name}, marker={"size": 12, "opacity": .95,
+                                                              "line": {"width": 1.5, "color": "white"}})
+    variance = payload.get("explained_variance_ratio", [])
+    if len(variance) >= 2:
+        figure.update_xaxes(title=f"PC1（解释方差 {variance[0] * 100:.2f}%）")
+        figure.update_yaxes(title=f"PC2（解释方差 {variance[1] * 100:.2f}%）")
+    figure.update_layout(height=520, margin=dict(l=10, r=10, t=55, b=10), legend_title_text="样本类型")
+    st.plotly_chart(figure, use_container_width=True, config={"displaylogo": False})
+
+    nearest = st.session_state.get("batch_nearest_materials")
+    if isinstance(nearest, pd.DataFrame) and not nearest.empty:
+        st.markdown("#### 最近的3个训练材料")
+        labels = nearest[["输入序号", "输入材料", "输入电解质"]].drop_duplicates().copy()
+        label_map = {int(row.输入序号): f'{int(row.输入序号)}. {row.输入材料} | {row.输入电解质}'
+                     for row in labels.itertuples()}
+        selected_index = st.selectbox("选择输入材料", list(label_map),
+                                      format_func=lambda value: label_map[value], key="batch_nearest_selector")
+        shown = nearest[nearest["输入序号"] == selected_index].drop(
+            columns=["输入序号", "输入材料", "输入电解质"])
+        st.dataframe(shown.round(5), use_container_width=True, hide_index=True)
+        st.caption("PCA标准化距离越小，表示该训练材料在PCA空间中与输入材料越接近。Excel下载文件包含全部输入材料的最近邻结果。")
+
+
+@st.fragment
+def render_batch_downloads(csv_bytes, excel_bytes):
+    st.markdown("### 下载批量预测结果")
+    c1, c2 = st.columns(2)
+    c1.download_button("下载批量结果 CSV", data=csv_bytes, file_name="batch_asr_predictions.csv",
+                       mime="text/csv", key="download_batch_csv", on_click="ignore",
+                       type="primary", use_container_width=True)
+    c2.download_button("下载批量结果 Excel", data=excel_bytes, file_name="batch_asr_predictions.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                       key="download_batch_excel", on_click="ignore", type="primary", use_container_width=True)
+    csv_b64 = base64.b64encode(csv_bytes).decode("ascii")
+    excel_b64 = base64.b64encode(excel_bytes).decode("ascii")
+    st.markdown(
+        f'<div style="text-align:center;margin-top:.45rem;color:#64748b;font-size:.86rem">'
+        f'若上方按钮被浏览器拦截，可使用备用链接：'
+        f'<a download="batch_asr_predictions.csv" href="data:text/csv;base64,{csv_b64}">CSV</a>'
+        f' &nbsp;|&nbsp; '
+        f'<a download="batch_asr_predictions.xlsx" href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{excel_b64}">Excel</a>'
+        f'</div>', unsafe_allow_html=True,
+    )
 
 
 MODEL_OPTIONS = {

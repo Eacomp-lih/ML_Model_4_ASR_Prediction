@@ -176,7 +176,7 @@ class ASRPredictor:
 
     def predict(
         self, formula: str, electrolyte: str, model_name: str = "rf", *, verbose: bool = True,
-        include_details: bool = True,
+        include_details: bool = True, include_impacts: bool | None = None,
     ) -> dict[str, Any]:
         model_name = str(model_name).lower().strip()
         if model_name not in MODEL_NAMES:
@@ -186,7 +186,9 @@ class ASRPredictor:
         reliability, domain, pca_distance = self.pca_applicability.score(frame)
         pca_details = self.pca_applicability.details(frame) if include_details else None
         impacts = []
-        if include_details:
+        if include_impacts is None:
+            include_impacts = include_details
+        if include_impacts:
             baseline = log_asr
             for feature in self.feature_columns:
                 median = self.feature_medians.get(feature, np.nan)
