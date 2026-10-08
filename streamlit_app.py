@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import base64
+import importlib
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -31,12 +32,13 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from sklearn.svm import SVR
 
-from prediction_core import ASRPredictor, ELECTROLYTES, MODEL_NAMES
+import prediction_core
+from prediction_core import ELECTROLYTES, MODEL_NAMES
 
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "sanhuan-logo.png"
-APP_VERSION = "v0.9.2"
+APP_VERSION = "v0.9.3"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -320,8 +322,14 @@ restore_browser_ui_state()
 
 
 @st.cache_resource(show_spinner="正在加载模型与适用域分析器…")
+def _load_predictor(version):
+    # Streamlit can rerun this file while retaining the old imported module.
+    # Reload it when the app version changes so new predictor methods are present.
+    return importlib.reload(prediction_core).ASRPredictor()
+
+
 def get_predictor():
-    return ASRPredictor()
+    return _load_predictor(APP_VERSION)
 
 
 @st.cache_data(show_spinner=False)
