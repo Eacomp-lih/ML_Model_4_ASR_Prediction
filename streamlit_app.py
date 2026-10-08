@@ -38,7 +38,7 @@ from prediction_core import ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "sanhuan-logo.png"
-APP_VERSION = "v0.9.3"
+APP_VERSION = "v0.9.4"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -352,18 +352,33 @@ def heading(title, subtitle):
 def add_pca_applicability_domain(figure, target_scores):
     """Overlay the notebook's kNN/conformal 85% PCA applicability domain."""
     grid = get_predictor().pca_domain_grid(target_scores)
+    p_values = np.asarray(grid["p"], dtype=float)
+    # Plot only the inside mask. Using a constraint contour directly causes
+    # Plotly to fill the complement of the domain in some versions.
+    inside_mask = np.where(p_values > grid["alpha"], 1.0, np.nan)
     boundary = go.Contour(
-        x=grid["x"], y=grid["y"], z=grid["p"],
-        contours={"type": "constraint", "operation": ">", "value": grid["alpha"]},
-        line={"color": "#238b45", "width": 2.2},
-        fillcolor="rgba(163, 215, 168, 0.30)",
+        x=grid["x"], y=grid["y"], z=inside_mask,
+        contours={"start": 0.5, "end": 1.0, "size": 0.5, "coloring": "fill", "showlines": False},
+        colorscale=[[0.0, "rgba(35,126,245,0.10)"], [1.0, "rgba(35,126,245,0.10)" ]],
+        connectgaps=False, line={"color": "#237ef5", "width": 2.2},
+        fillcolor="rgba(35,126,245,0.10)",
         name="85%适用域", showlegend=True, showscale=False, hoverinfo="skip",
     )
+    outline = go.Contour(
+        x=grid["x"], y=grid["y"], z=p_values,
+        contours={"start": grid["alpha"], "end": grid["alpha"], "size": 1,
+                   "coloring": "lines", "showlines": True},
+        line={"color": "#1768c4", "width": 2.4}, showscale=False,
+        showlegend=False, hoverinfo="skip",
+    )
     figure.add_trace(boundary)
-    figure.data = (figure.data[-1],) + figure.data[:-1]
+    figure.add_trace(outline)
+    figure.data = (figure.data[-2], figure.data[-1]) + figure.data[:-2]
     figure.update_layout(
         title={"text": figure.layout.title.text + "（85%适用域）"},
         legend_title_text="样本与适用域",
+        height=560,
+        margin=dict(l=42, r=18, t=64, b=46),
     )
     return grid
 
