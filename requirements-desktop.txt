@@ -1,0 +1,4 @@
+# Install on Windows to build the offline desktop executable.
+-r requirements.txt
+pyinstaller>=6.0,<7
+pywebview>=5.0,<7

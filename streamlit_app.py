@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import base64
 import importlib
+import os
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,7 +39,8 @@ from prediction_core import ELECTROLYTES, MODEL_NAMES
 ROOT = Path(__file__).resolve().parent
 TRAINING_FILE = ROOT / "data" / "data_923K_2026_09_09_v2.xlsx"
 LOGO_FILE = ROOT / "assets" / "sanhuan-logo.png"
-APP_VERSION = "v0.9.5"
+APP_VERSION = "v0.9.6"
+DESKTOP_MODE = os.environ.get("ASR_DESKTOP_MODE") == "1"
 
 st.set_page_config(page_title="钙钛矿型SOFC阴极材料650℃下ASR预测", page_icon="⚡",
                    layout="wide", initial_sidebar_state="expanded")
@@ -100,6 +102,8 @@ if st.session_state.get("ui_density") == "紧凑":
 
 
 def get_auth_config():
+    if DESKTOP_MODE:
+        return {"required": False}, "", ""
     try:
         auth = dict(st.secrets.get("auth", {}))
     except Exception:
@@ -1175,7 +1179,67 @@ def save_theme_setting():
                              expires_at=datetime.now() + timedelta(days=30), key="save_ui_theme")
 
 
+def desktop_settings_page():
+    heading("设置", "管理本机界面、查看操作记录和离线运行状态。")
+    display_tab, history_tab, service_tab, help_tab = st.tabs([
+        "显示设置", "操作记录", "本地状态", "帮助与关于",
+    ])
+    with display_tab:
+        st.markdown("#### 外观与使用偏好")
+        if "_ui_theme_control" not in st.session_state:
+            st.session_state._ui_theme_control = st.session_state.get("ui_theme_saved", "亮色")
+        st.radio("显示模式", ["亮色", "暗色"], horizontal=True,
+                 key="_ui_theme_control", on_change=save_theme_setting)
+        left, right = st.columns(2)
+        left.radio("字体大小", ["标准", "大"], horizontal=True, key="ui_font_size")
+        right.radio("内容密度", ["舒适", "紧凑"], horizontal=True, key="ui_density")
+        st.markdown("#### 预测默认值")
+        left, right = st.columns(2)
+        left.selectbox("默认模型", [name.upper() for name in MODEL_NAMES], index=1,
+                       key="default_prediction_model")
+        right.selectbox("默认电解质", list(ELECTROLYTES), index=1,
+                        key="default_electrolyte")
+        st.button("恢复默认显示设置", on_click=reset_display_settings)
+    with history_tab:
+        st.markdown("#### 本次运行的操作记录")
+        history = st.session_state.get("operation_history", [])
+        if history:
+            history_frame = pd.DataFrame(history)
+            st.dataframe(history_frame, use_container_width=True, hide_index=True)
+            st.download_button("导出操作记录 CSV", history_frame.to_csv(index=False).encode("utf-8-sig"),
+                               "asr_operation_history.csv", "text/csv")
+        else:
+            st.info("本次运行尚无操作记录。")
+        st.caption("操作记录仅保存在本次运行中；需要留存时请导出 CSV。")
+    with service_tab:
+        checks = [("内置训练数据", TRAINING_FILE.exists()),
+                  ("模型文件", all((ROOT / "models" / f"{name}_final.joblib").exists()
+                               for name in MODEL_NAMES))]
+        try:
+            checks.insert(0, ("预测服务", bool(get_predictor().models)))
+        except Exception as exc:
+            checks.insert(0, ("预测服务", False))
+            st.error(f"模型加载失败：{exc}")
+        st.dataframe(pd.DataFrame([{"组件": name, "状态": "正常" if ok else "异常"}
+                                   for name, ok in checks]), use_container_width=True,
+                     hide_index=True)
+        st.caption("全部计算在本机完成，不需要互联网连接。")
+    with help_tab:
+        st.markdown("#### 使用说明")
+        st.markdown("输入化学式并选择电解质、模型即可预测；批量预测支持 CSV/XLSX。"
+                    "模型训练、数据上传与查询也在本机完成。")
+        st.markdown("#### 数据与隐私")
+        st.markdown("上传的文件和预测输入只在本机处理，不发送到云端。"
+                    "下载的结果由你选择保存位置。")
+        st.markdown("#### 科研使用声明")
+        st.markdown("预测结果、可靠性得分及模型解释仅供科研筛选参考，"
+                    "关键结论仍需实验验证。")
+
+
 def settings_page():
+    if DESKTOP_MODE:
+        desktop_settings_page()
+        return
     heading(t("设置", "Settings"), t("管理账号资料、登录安全、界面显示和问题反馈。",
                                       "Manage your account, security, appearance and feedback."))
     account_tab, display_tab, history_tab, service_tab, feedback_tab, help_tab = st.tabs([
