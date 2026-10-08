@@ -53,6 +53,8 @@ def _serve(port: int) -> None:
         st_config.set_option("server.address", "127.0.0.1")
         st_config.set_option("server.port", port)
         st_config.set_option("server.headless", True)
+        st_config.set_option("browser.serverAddress", "127.0.0.1")
+        st_config.set_option("browser.serverPort", port)
         bootstrap.run(
             str(APP_FILE), False, [],
             flag_options={
@@ -97,7 +99,7 @@ def main() -> None:
         if not _wait_for_server(port, process):
             _show_error("本地应用未能启动。请检查程序文件是否完整，然后重新打开。")
             return
-        url = f"http://127.0.0.1:{port}"
+        url = f"http://127.0.0.1:{port}/"
         try:
             import webview
 
